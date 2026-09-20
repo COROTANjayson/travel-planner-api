@@ -24,6 +24,10 @@ func CurrentUser(ctx context.Context) (User, bool) {
 	return user, ok
 }
 
+func WithUser(ctx context.Context, user User) context.Context {
+	return context.WithValue(ctx, userKey{}, user)
+}
+
 func (a *Auth) Middleware(next http.Handler) http.Handler {
 	return a.jwt.CheckJWT(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		validated, err := jwtmiddleware.GetClaims[*validator.ValidatedClaims](r.Context())
@@ -54,6 +58,6 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 			httpx.Error(w, err)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey{}, user)))
+		next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), user)))
 	}))
 }

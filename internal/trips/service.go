@@ -11,11 +11,11 @@ import (
 )
 
 type Store interface {
-	Create(context.Context, Input) (Trip, error)
-	List(context.Context, int, int) ([]Trip, error)
-	Get(context.Context, int64) (Trip, error)
-	Update(context.Context, int64, Input) (Trip, error)
-	Delete(context.Context, int64) error
+	Create(context.Context, int64, Input) (Trip, error)
+	List(context.Context, int64, int, int) ([]Trip, error)
+	Get(context.Context, int64, int64) (Trip, error)
+	Update(context.Context, int64, int64, Input) (Trip, error)
+	Delete(context.Context, int64, int64) error
 }
 
 type Service struct{ store Store }
@@ -43,22 +43,26 @@ func validate(in Input) (Input, error) {
 	return in, nil
 }
 
-func (s *Service) Create(ctx context.Context, in Input) (Trip, error) {
+func (s *Service) Create(ctx context.Context, ownerUserID int64, in Input) (Trip, error) {
 	in, err := validate(in)
 	if err != nil {
 		return Trip{}, err
 	}
-	return s.store.Create(ctx, in)
+	return s.store.Create(ctx, ownerUserID, in)
 }
-func (s *Service) List(ctx context.Context, limit, offset int) ([]Trip, error) {
-	return s.store.List(ctx, limit, offset)
+func (s *Service) List(ctx context.Context, ownerUserID int64, limit, offset int) ([]Trip, error) {
+	return s.store.List(ctx, ownerUserID, limit, offset)
 }
-func (s *Service) Get(ctx context.Context, id int64) (Trip, error) { return s.store.Get(ctx, id) }
-func (s *Service) Update(ctx context.Context, id int64, in Input) (Trip, error) {
+func (s *Service) Get(ctx context.Context, ownerUserID, id int64) (Trip, error) {
+	return s.store.Get(ctx, ownerUserID, id)
+}
+func (s *Service) Update(ctx context.Context, ownerUserID, id int64, in Input) (Trip, error) {
 	in, err := validate(in)
 	if err != nil {
 		return Trip{}, err
 	}
-	return s.store.Update(ctx, id, in)
+	return s.store.Update(ctx, ownerUserID, id, in)
 }
-func (s *Service) Delete(ctx context.Context, id int64) error { return s.store.Delete(ctx, id) }
+func (s *Service) Delete(ctx context.Context, ownerUserID, id int64) error {
+	return s.store.Delete(ctx, ownerUserID, id)
+}

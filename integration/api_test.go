@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"travel-planner/travel-planner-api/internal/auth"
 	"travel-planner/travel-planner-api/internal/database"
 	"travel-planner/travel-planner-api/internal/itinerary"
 	"travel-planner/travel-planner-api/internal/server"
@@ -39,8 +41,40 @@ func TestAPILifecycle(t *testing.T) {
 		t.Fatal("integration database name must end in _test")
 	}
 
-	handler := server.Router(trips.NewService(trips.NewRepository(pool)), itinerary.NewService(itinerary.NewRepository(pool)), func(next http.Handler) http.Handler { return next })
-	request := func(method, path string, body any, status int, target any) {
+	subject := fmt.Sprintf("integration|%d", time.Now().UnixNano())
+	var ownerID, otherID int64
+	if err := pool.QueryRow(ctx, "INSERT INTO users (auth_subject) VALUES ($1) RETURNING id", subject+"|owner").Scan(&ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, "INSERT INTO users (auth_subject) VALUES ($1) RETURNING id", subject+"|other").Scan(&otherID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupPool, err := database.Open(context.Background(), url)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer cleanupPool.Close()
+		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := cleanupPool.Exec(cctx, "DELETE FROM users WHERE id=$1 OR id=$2", ownerID, otherID); err != nil {
+			t.Error(err)
+		}
+	})
+
+	testAuth := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id, err := strconv.ParseInt(r.Header.Get("X-Test-User-ID"), 10, 64)
+			if err != nil || (id != ownerID && id != otherID) {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), auth.User{ID: id})))
+		})
+	}
+	handler := server.Router(trips.NewService(trips.NewRepository(pool)), itinerary.NewService(itinerary.NewRepository(pool)), testAuth)
+	requestAs := func(userID int64, method, path string, body any, status int, target any) {
 		t.Helper()
 		var payload []byte
 		if body != nil {
@@ -53,6 +87,7 @@ func TestAPILifecycle(t *testing.T) {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(method, path, bytes.NewReader(payload)).WithContext(ctx)
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Test-User-ID", strconv.FormatInt(userID, 10))
 		handler.ServeHTTP(w, req)
 		if w.Code != status {
 			t.Fatalf("%s %s: status %d, want %d: %s", method, path, w.Code, status, w.Body.String())
@@ -62,6 +97,9 @@ func TestAPILifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+	request := func(method, path string, body any, status int, target any) {
+		requestAs(ownerID, method, path, body, status, target)
 	}
 	cleanup := func(id int64) {
 		t.Helper()
@@ -84,6 +122,11 @@ func TestAPILifecycle(t *testing.T) {
 	var trip trips.Trip
 	request("POST", "/api/v1/trips", input, 201, &trip)
 	cleanup(trip.ID)
+	var storedOwnerID int64
+	if err := pool.QueryRow(ctx, "SELECT owner_user_id FROM trips WHERE id=$1", trip.ID).Scan(&storedOwnerID); err != nil || storedOwnerID != ownerID {
+		t.Fatalf("trip owner = %d, want %d: %v", storedOwnerID, ownerID, err)
+	}
+	request("POST", "/api/v1/trips", map[string]any{"owner_user_id": otherID}, 400, nil)
 	base := fmt.Sprintf("/api/v1/trips/%d", trip.ID)
 	request("GET", base, nil, 200, &trip)
 	if trip.StartDate != input.StartDate || trip.TimeZone != input.TimeZone {
@@ -121,8 +164,18 @@ func TestAPILifecycle(t *testing.T) {
 	}
 
 	var other trips.Trip
-	request("POST", "/api/v1/trips", input, 201, &other)
+	requestAs(otherID, "POST", "/api/v1/trips", input, 201, &other)
 	cleanup(other.ID)
+	requestAs(otherID, "GET", base, nil, 404, nil)
+	requestAs(otherID, "PUT", base, input, 404, nil)
+	requestAs(otherID, "DELETE", base, nil, 404, nil)
+	request("GET", base, nil, 200, nil)
+	var ownerTrips, otherTrips []trips.Trip
+	request("GET", "/api/v1/trips?limit=1", nil, 200, &ownerTrips)
+	requestAs(otherID, "GET", "/api/v1/trips?limit=1", nil, 200, &otherTrips)
+	if len(ownerTrips) != 1 || ownerTrips[0].ID != trip.ID || len(otherTrips) != 1 || otherTrips[0].ID != other.ID {
+		t.Fatal("trip list was not filtered by owner before pagination")
+	}
 	wrongPath := fmt.Sprintf("/api/v1/trips/%d/activities/%d", other.ID, activity.ID)
 	request("GET", wrongPath, nil, 404, nil)
 	request("PUT", wrongPath, activityInput, 404, nil)

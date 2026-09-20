@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"travel-planner/travel-planner-api/internal/apperror"
+	"travel-planner/travel-planner-api/internal/auth"
 	"travel-planner/travel-planner-api/internal/trips"
 )
 
@@ -18,12 +19,27 @@ type failingTrips struct {
 	err error
 }
 
-func (s failingTrips) Get(context.Context, int64) (trips.Trip, error) { return trips.Trip{}, s.err }
+func (s failingTrips) Get(context.Context, int64, int64) (trips.Trip, error) {
+	return trips.Trip{}, s.err
+}
 
-func noAuth(next http.Handler) http.Handler { return next }
+func testIdentity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), auth.User{ID: 1})))
+	})
+}
+
+func TestTripsRequireAuthenticatedUserContext(t *testing.T) {
+	handler := Router(nil, nil, func(next http.Handler) http.Handler { return next })
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/trips", nil))
+	if w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"unauthorized\"}\n" {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+}
 
 func TestHealthAndRequestValidation(t *testing.T) {
-	handler := Router(nil, nil, noAuth)
+	handler := Router(nil, nil, testIdentity)
 	for index, tc := range []struct {
 		method, path, body string
 		status             int
@@ -66,7 +82,7 @@ func TestRepositoryErrors(t *testing.T) {
 		{apperror.ErrNotFound, http.StatusNotFound},
 		{errors.New("secret database detail"), http.StatusInternalServerError},
 	} {
-		handler := Router(trips.NewService(failingTrips{err: tc.err}), nil, noAuth)
+		handler := Router(trips.NewService(failingTrips{err: tc.err}), nil, testIdentity)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/trips/1", nil))
 		if w.Code != tc.status {

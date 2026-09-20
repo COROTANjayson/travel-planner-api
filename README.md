@@ -34,7 +34,7 @@ The `source .env` commands in this README are still needed for Goose and integra
 
 Create an Auth0 API using RS256. Set `AUTH0_ISSUER_URL` to its tenant domain with a trailing slash and `AUTH0_AUDIENCE` to its API Identifier. Auth0 handles signup and login; the API creates a local user on the first authenticated request.
 
-The API listens on `127.0.0.1`. Auth0 protects `/api/v1`; `/health` remains public. Trip ownership and permissions are not implemented yet, so authenticated users are not isolated from each other's trip data and this version remains for local development.
+The API listens on `127.0.0.1`. Auth0 protects `/api/v1`; `/health` remains public. Each trip belongs to the authenticated user who creates it, and trip CRUD endpoints hide other users' trips with HTTP 404.
 
 In another Git Bash terminal:
 
@@ -122,9 +122,9 @@ All feature endpoints use the `/api/v1` prefix and require an Auth0 bearer acces
 | --- | --- | --- |
 | GET | `/health` | Server status, HTTP 200 |
 | GET | `/api/v1/me` | Current local user, HTTP 200 |
-| POST | `/api/v1/trips` | Create trip, HTTP 201 |
-| GET | `/api/v1/trips` | List trips, HTTP 200 |
-| GET / PUT / DELETE | `/api/v1/trips/{tripID}` | Read / replace / delete a trip |
+| POST | `/api/v1/trips` | Create an owned trip, HTTP 201 |
+| GET | `/api/v1/trips` | List the caller's trips, HTTP 200 |
+| GET / PUT / DELETE | `/api/v1/trips/{tripID}` | Read / replace / delete the caller's trip |
 | POST | `/api/v1/trips/{tripID}/activities` | Create scheduled activity, HTTP 201 |
 | GET | `/api/v1/trips/{tripID}/activities` | List activities in schedule order |
 | GET / PUT / DELETE | `/api/v1/trips/{tripID}/activities/{activityID}` | Read / replace / delete an activity within that trip |
@@ -159,7 +159,7 @@ Dates use `YYYY-MM-DD`; a trip's end date cannot precede its start date. Activit
 
 Deleting a trip also deletes its activities. Activities are always addressed within their parent trip. Days can be derived from activity timestamps in their saved time zones; this first version has no separate day-management endpoint or manual ordering.
 
-Trip dates are planning metadata: this version does not enforce activity containment within those dates or detect overlapping activities. Trip ownership, group split/rejoin, memberships, templates, expenses, and realtime collaboration remain future work.
+Trip dates are planning metadata: this version does not enforce activity containment within those dates or detect overlapping activities. Activity permissions, group split/rejoin, memberships, templates, expenses, and realtime collaboration remain future work.
 
 ## Migrations, tests, and build
 
@@ -177,11 +177,11 @@ go build -o travel-planner-api.exe ./cmd/api
 
 Without `TEST_DATABASE_URL`, the integration test explicitly skips; unit and handler tests still run. With it, tests exercise actual PostgreSQL persistence, trip and activity CRUD, UTC conversion, pagination, parent-trip isolation, and cascading deletion. They remove only the trips they create. Validation tests cover invalid dates, time zones, IDs, JSON, and pagination.
 
-The migrations create trips, itinerary items, and local users. To check the latest migration rollback on the disposable test database only:
+The migrations create trips, itinerary items, local users, and trip ownership. The ownership migration intentionally stops if legacy trips exist; reset local trip data or perform a reviewed one-off owner assignment before rerunning it. To check the latest migration rollback on the disposable test database only:
 
 ```bash
 goose -dir migrations postgres "$TEST_DATABASE_URL" down
 goose -dir migrations postgres "$TEST_DATABASE_URL" up
 ```
 
-One rollback removes the latest `users` table and its contents. Development migrations are run explicitly before starting the API.
+One rollback removes trip ownership. Development migrations are run explicitly before starting the API.
