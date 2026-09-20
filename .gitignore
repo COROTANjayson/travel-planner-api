@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+.local/
+*.exe
+coverage.out
+
+
+travel-planner.md
