@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -38,7 +39,7 @@ func TestAPILifecycle(t *testing.T) {
 		t.Fatal("integration database name must end in _test")
 	}
 
-	handler := server.Router(trips.NewService(trips.NewRepository(pool)), itinerary.NewService(itinerary.NewRepository(pool)))
+	handler := server.Router(trips.NewService(trips.NewRepository(pool)), itinerary.NewService(itinerary.NewRepository(pool)), func(next http.Handler) http.Handler { return next })
 	request := func(method, path string, body any, status int, target any) {
 		t.Helper()
 		var payload []byte

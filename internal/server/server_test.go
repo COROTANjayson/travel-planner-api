@@ -20,8 +20,10 @@ type failingTrips struct {
 
 func (s failingTrips) Get(context.Context, int64) (trips.Trip, error) { return trips.Trip{}, s.err }
 
+func noAuth(next http.Handler) http.Handler { return next }
+
 func TestHealthAndRequestValidation(t *testing.T) {
-	handler := Router(nil, nil)
+	handler := Router(nil, nil, noAuth)
 	for index, tc := range []struct {
 		method, path, body string
 		status             int
@@ -64,7 +66,7 @@ func TestRepositoryErrors(t *testing.T) {
 		{apperror.ErrNotFound, http.StatusNotFound},
 		{errors.New("secret database detail"), http.StatusInternalServerError},
 	} {
-		handler := Router(trips.NewService(failingTrips{err: tc.err}), nil)
+		handler := Router(trips.NewService(failingTrips{err: tc.err}), nil, noAuth)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/trips/1", nil))
 		if w.Code != tc.status {

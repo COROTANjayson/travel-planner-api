@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"travel-planner/travel-planner-api/internal/auth"
 	"travel-planner/travel-planner-api/internal/config"
 	"travel-planner/travel-planner-api/internal/database"
 	"travel-planner/travel-planner-api/internal/itinerary"
@@ -38,7 +39,11 @@ func run() error {
 	}
 	defer pool.Close()
 
-	api := server.New(cfg.Port, trips.NewService(trips.NewRepository(pool)), itinerary.NewService(itinerary.NewRepository(pool)))
+	authenticator, err := auth.New(cfg.Auth0IssuerURL, cfg.Auth0Audience, auth.NewRepository(pool))
+	if err != nil {
+		return err
+	}
+	api := server.New(cfg.Port, trips.NewService(trips.NewRepository(pool)), itinerary.NewService(itinerary.NewRepository(pool)), authenticator.Middleware)
 	errs := make(chan error, 1)
 	go func() {
 		slog.Info("starting local API", "address", api.Addr)

@@ -9,7 +9,7 @@ import (
 
 func TestLoadDotEnv(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
-	if err := os.WriteFile(path, []byte("PORT=9090\nDATABASE_URL='postgres://localhost/local_database'\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("PORT=9090\nDATABASE_URL='postgres://localhost/local_database'\nAUTH0_ISSUER_URL=https://example.auth0.com/\nAUTH0_AUDIENCE=https://travel-planner-api\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	lookup := func(string) (string, bool) { return "", false }
@@ -35,7 +35,13 @@ func TestLoadDotEnv(t *testing.T) {
 
 	missing := filepath.Join(t.TempDir(), "missing.env")
 	cfg, err = load(missing, func(key string) (string, bool) {
-		return "postgres://localhost/environment_database", key == "DATABASE_URL"
+		values := map[string]string{
+			"DATABASE_URL":     "postgres://localhost/environment_database",
+			"AUTH0_ISSUER_URL": "https://example.auth0.com/",
+			"AUTH0_AUDIENCE":   "https://travel-planner-api",
+		}
+		value, ok := values[key]
+		return value, ok
 	})
 	if err != nil || cfg.Port != "8080" {
 		t.Fatalf("environment-only startup failed: %v", err)
@@ -55,22 +61,33 @@ func TestLoadDotEnv(t *testing.T) {
 
 func TestParse(t *testing.T) {
 	for _, tc := range []struct {
-		name, port, database string
-		wantErr              bool
+		name, port, database, issuer, audience string
+		wantErr                                bool
 	}{
-		{"default port", "", "postgres://localhost/travel_planner", false},
-		{"explicit port", "9090", "postgres://localhost/travel_planner", false},
-		{"missing database", "8080", "", true},
-		{"invalid port", "abc", "postgres://localhost/travel_planner", true},
-		{"zero port", "0", "postgres://localhost/travel_planner", true},
-		{"out of range", "65536", "postgres://localhost/travel_planner", true},
+		{"default port", "", "postgres://localhost/travel_planner", "https://example.auth0.com/", "https://travel-planner-api", false},
+		{"explicit port", "9090", "postgres://localhost/travel_planner", "https://example.auth0.com/", "https://travel-planner-api", false},
+		{"missing database", "8080", "", "https://example.auth0.com/", "https://travel-planner-api", true},
+		{"invalid port", "abc", "postgres://localhost/travel_planner", "https://example.auth0.com/", "https://travel-planner-api", true},
+		{"zero port", "0", "postgres://localhost/travel_planner", "https://example.auth0.com/", "https://travel-planner-api", true},
+		{"out of range", "65536", "postgres://localhost/travel_planner", "https://example.auth0.com/", "https://travel-planner-api", true},
+		{"missing issuer", "8080", "postgres://localhost/travel_planner", "", "https://travel-planner-api", true},
+		{"http issuer", "8080", "postgres://localhost/travel_planner", "http://example.auth0.com/", "https://travel-planner-api", true},
+		{"issuer without slash", "8080", "postgres://localhost/travel_planner", "https://example.auth0.com", "https://travel-planner-api", true},
+		{"missing audience", "8080", "postgres://localhost/travel_planner", "https://example.auth0.com/", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := parse(func(key string) string {
-				if key == "PORT" {
+				switch key {
+				case "PORT":
 					return tc.port
+				case "DATABASE_URL":
+					return tc.database
+				case "AUTH0_ISSUER_URL":
+					return tc.issuer
+				case "AUTH0_AUDIENCE":
+					return tc.audience
 				}
-				return tc.database
+				return ""
 			})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("unexpected error: %v", err)

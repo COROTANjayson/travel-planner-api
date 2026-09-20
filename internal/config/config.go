@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -10,8 +11,10 @@ import (
 )
 
 type Config struct {
-	Port        string
-	DatabaseURL string
+	Port           string
+	DatabaseURL    string
+	Auth0IssuerURL string
+	Auth0Audience  string
 }
 
 func Load() (Config, error) {
@@ -33,7 +36,12 @@ func load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 }
 
 func parse(getenv func(string) string) (Config, error) {
-	c := Config{Port: strings.TrimSpace(getenv("PORT")), DatabaseURL: strings.TrimSpace(getenv("DATABASE_URL"))}
+	c := Config{
+		Port:           strings.TrimSpace(getenv("PORT")),
+		DatabaseURL:    strings.TrimSpace(getenv("DATABASE_URL")),
+		Auth0IssuerURL: strings.TrimSpace(getenv("AUTH0_ISSUER_URL")),
+		Auth0Audience:  strings.TrimSpace(getenv("AUTH0_AUDIENCE")),
+	}
 	if c.Port == "" {
 		c.Port = "8080"
 	}
@@ -43,6 +51,13 @@ func parse(getenv func(string) string) (Config, error) {
 	}
 	if c.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
+	}
+	issuer, err := url.Parse(c.Auth0IssuerURL)
+	if err != nil || issuer.Scheme != "https" || issuer.Host == "" || issuer.RawQuery != "" || issuer.Fragment != "" || !strings.HasSuffix(c.Auth0IssuerURL, "/") {
+		return Config{}, errors.New("AUTH0_ISSUER_URL must be an HTTPS URL ending in /")
+	}
+	if c.Auth0Audience == "" {
+		return Config{}, errors.New("AUTH0_AUDIENCE is required")
 	}
 	return c, nil
 }

@@ -8,15 +8,16 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"travel-planner/travel-planner-api/internal/auth"
 	"travel-planner/travel-planner-api/internal/httpx"
 	"travel-planner/travel-planner-api/internal/itinerary"
 	"travel-planner/travel-planner-api/internal/trips"
 )
 
-func New(port string, tripService *trips.Service, itineraryService *itinerary.Service) *http.Server {
+func New(port string, tripService *trips.Service, itineraryService *itinerary.Service, authenticate func(http.Handler) http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              net.JoinHostPort("127.0.0.1", port),
-		Handler:           Router(tripService, itineraryService),
+		Handler:           Router(tripService, itineraryService, authenticate),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -24,13 +25,15 @@ func New(port string, tripService *trips.Service, itineraryService *itinerary.Se
 	}
 }
 
-func Router(tripService *trips.Service, itineraryService *itinerary.Service) http.Handler {
+func Router(tripService *trips.Service, itineraryService *itinerary.Service, authenticate func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, requestLog, recoverJSON, middleware.Timeout(25*time.Second))
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(authenticate)
+		auth.Register(r)
 		trips.Register(r, tripService)
 		itinerary.Register(r, itineraryService)
 	})

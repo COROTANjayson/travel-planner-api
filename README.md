@@ -28,9 +28,13 @@ The `source .env` commands in this README are still needed for Goose and integra
 | --- | --- |
 | `PORT` | Defaults to `8080`; accepts integers from 1 to 65535. |
 | `DATABASE_URL` | Required PostgreSQL connection URL. Startup checks the connection and fails with a clear error if it cannot connect. |
+| `AUTH0_ISSUER_URL` | Required Auth0 issuer URL, including `https://` and the trailing slash. |
+| `AUTH0_AUDIENCE` | Required Auth0 API identifier expected in access tokens. |
 | `TEST_DATABASE_URL` | Used only by integration tests; the database name must end in `_test`. |
 
-The API listens on `127.0.0.1`. Authentication and trip permissions are not implemented yet, so this initial API is for local development.
+Create an Auth0 API using RS256. Set `AUTH0_ISSUER_URL` to its tenant domain with a trailing slash and `AUTH0_AUDIENCE` to its API Identifier. Auth0 handles signup and login; the API creates a local user on the first authenticated request.
+
+The API listens on `127.0.0.1`. Auth0 protects `/api/v1`; `/health` remains public. Trip ownership and permissions are not implemented yet, so authenticated users are not isolated from each other's trip data and this version remains for local development.
 
 In another Git Bash terminal:
 
@@ -77,6 +81,8 @@ Edit `.env` in your editor to use these settings, replacing `YOUR_PASSWORD` with
 ```dotenv
 PORT=8080
 DATABASE_URL=postgres://travel_planner_dev:YOUR_PASSWORD@127.0.0.1:55432/travel_planner?sslmode=disable
+AUTH0_ISSUER_URL=https://YOUR_AUTH0_DOMAIN/
+AUTH0_AUDIENCE=https://travel-planner-api
 TEST_DATABASE_URL=postgres://travel_planner_dev:YOUR_PASSWORD@127.0.0.1:55432/travel_planner_test?sslmode=disable
 ```
 
@@ -106,13 +112,16 @@ travel-planner-api/
 └── go.sum
 ```
 
+Authentication lives in `internal/auth/`; it validates Auth0 tokens and provisions local users.
+
 ## API
 
-All feature endpoints use the `/api/v1` prefix. Request bodies and successful resource responses are JSON.
+All feature endpoints use the `/api/v1` prefix and require an Auth0 bearer access token. Request bodies and successful resource responses are JSON.
 
 | Method | Path | Result |
 | --- | --- | --- |
 | GET | `/health` | Server status, HTTP 200 |
+| GET | `/api/v1/me` | Current local user, HTTP 200 |
 | POST | `/api/v1/trips` | Create trip, HTTP 201 |
 | GET | `/api/v1/trips` | List trips, HTTP 200 |
 | GET / PUT / DELETE | `/api/v1/trips/{tripID}` | Read / replace / delete a trip |
@@ -120,14 +129,16 @@ All feature endpoints use the `/api/v1` prefix. Request bodies and successful re
 | GET | `/api/v1/trips/{tripID}/activities` | List activities in schedule order |
 | GET / PUT / DELETE | `/api/v1/trips/{tripID}/activities/{activityID}` | Read / replace / delete an activity within that trip |
 
-Reads and replacements return HTTP 200; deletion returns HTTP 204 with no body. Creation also returns a `Location` header. IDs are positive integers. Invalid input returns HTTP 400, missing resources return HTTP 404, and unexpected errors return HTTP 500. Errors use `{"error":"message"}` without database details.
+Reads and replacements return HTTP 200; deletion returns HTTP 204 with no body. Creation also returns a `Location` header. IDs are positive integers. Missing or invalid authentication returns HTTP 401, invalid input returns HTTP 400, missing resources return HTTP 404, and unexpected errors return HTTP 500. Errors use `{"error":"message"}` without database details.
 
 List endpoints return arrays, including `[]` when empty. Both accept `?limit=50&offset=0`; limit defaults to 50 and is capped at 100. Trips sort by newest ID first; activities sort by start instant and then ID. Listing activities for a nonexistent trip returns HTTP 404.
 
 Create a trip:
 
 ```bash
+ACCESS_TOKEN=YOUR_AUTH0_ACCESS_TOKEN
 curl --fail-with-body http://127.0.0.1:8080/api/v1/trips \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name":"Cebu weekend","destination":"Cebu","start_date":"2026-10-01","end_date":"2026-10-03","time_zone":"Asia/Manila"}'
 ```
@@ -137,6 +148,7 @@ Create an activity using the trip ID returned above:
 ```bash
 TRIP_ID=1  # Replace with the returned trip ID.
 curl --fail-with-body "http://127.0.0.1:8080/api/v1/trips/$TRIP_ID/activities" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"title":"Breakfast","starts_at":"2026-10-01T09:00:00+08:00","ends_at":"2026-10-01T10:00:00+08:00","time_zone":"Asia/Manila","notes":"Near the hotel"}'
 ```
@@ -147,7 +159,7 @@ Dates use `YYYY-MM-DD`; a trip's end date cannot precede its start date. Activit
 
 Deleting a trip also deletes its activities. Activities are always addressed within their parent trip. Days can be derived from activity timestamps in their saved time zones; this first version has no separate day-management endpoint or manual ordering.
 
-Trip dates are planning metadata: this version does not enforce activity containment within those dates or detect overlapping activities. Automatic scheduling, group split/rejoin, memberships, authentication, templates, expenses, realtime collaboration, and AI workers remain future work.
+Trip dates are planning metadata: this version does not enforce activity containment within those dates or detect overlapping activities. Trip ownership, group split/rejoin, memberships, templates, expenses, and realtime collaboration remain future work.
 
 ## Migrations, tests, and build
 
@@ -165,11 +177,11 @@ go build -o travel-planner-api.exe ./cmd/api
 
 Without `TEST_DATABASE_URL`, the integration test explicitly skips; unit and handler tests still run. With it, tests exercise actual PostgreSQL persistence, trip and activity CRUD, UTC conversion, pagination, parent-trip isolation, and cascading deletion. They remove only the trips they create. Validation tests cover invalid dates, time zones, IDs, JSON, and pagination.
 
-The first migration creates `trips` and `itinerary_items`, constraints, and the itinerary schedule index. To check rollback on the disposable test database only:
+The migrations create trips, itinerary items, and local users. To check the latest migration rollback on the disposable test database only:
 
 ```bash
 goose -dir migrations postgres "$TEST_DATABASE_URL" down
 goose -dir migrations postgres "$TEST_DATABASE_URL" up
 ```
 
-Rollback removes these tables and their contents. Development migrations are run explicitly before starting the API.
+One rollback removes the latest `users` table and its contents. Development migrations are run explicitly before starting the API.
