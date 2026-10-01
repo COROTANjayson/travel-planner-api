@@ -14,6 +14,12 @@ type recordingStore struct {
 	input       Input
 }
 
+type allowAuthorizer struct{}
+
+func (allowAuthorizer) RequireParticipant(context.Context, int64, int64) error { return nil }
+func (allowAuthorizer) RequireEditor(context.Context, int64, int64) error      { return nil }
+func (allowAuthorizer) RequireOwner(context.Context, int64, int64) error       { return nil }
+
 func (r *recordingStore) Create(_ context.Context, ownerUserID int64, in Input) (Trip, error) {
 	r.called, r.ownerUserID, r.input = true, ownerUserID, in
 	return Trip{ID: 1, Input: in}, nil
@@ -35,14 +41,14 @@ func TestCreateValidation(t *testing.T) {
 			in := valid
 			tc.change(&in)
 			repo := &recordingStore{}
-			_, err := NewService(repo).Create(context.Background(), 42, in)
+			_, err := NewService(repo, allowAuthorizer{}).Create(context.Background(), 42, in)
 			if !errors.Is(err, apperror.ErrInvalid) || repo.called {
 				t.Fatalf("invalid input reached repository: %v", err)
 			}
 		})
 	}
 	repo := &recordingStore{}
-	_, err := NewService(repo).Create(context.Background(), 42, valid)
+	_, err := NewService(repo, allowAuthorizer{}).Create(context.Background(), 42, valid)
 	if err != nil || !repo.called || repo.ownerUserID != 42 || repo.input.Name != "Cebu trip" {
 		t.Fatalf("valid trip failed: %v", err)
 	}

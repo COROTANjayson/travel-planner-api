@@ -2,40 +2,35 @@ package auth
 
 import (
 	"context"
-	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Store interface {
-	GetOrCreate(context.Context, string, *string, string) (User, error)
+	GetOrCreate(context.Context, string, *string, bool, string) (User, error)
 }
 
 type Repository struct{ pool *pgxpool.Pool }
 
 func NewRepository(pool *pgxpool.Pool) *Repository { return &Repository{pool: pool} }
 
-const userColumns = "id, email, display_name, created_at, updated_at"
+const userColumns = "id, email, email_verified, display_name, created_at, updated_at"
 
 func scanUser(row pgx.Row) (User, error) {
 	var user User
-	err := row.Scan(&user.ID, &user.Email, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt)
+	err := row.Scan(&user.ID, &user.Email, &user.EmailVerified, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt)
 	user.CreatedAt = user.CreatedAt.UTC()
 	user.UpdatedAt = user.UpdatedAt.UTC()
 	return user, err
 }
 
-func (r *Repository) GetOrCreate(ctx context.Context, subject string, email *string, displayName string) (User, error) {
-	user, err := scanUser(r.pool.QueryRow(ctx, "SELECT "+userColumns+" FROM users WHERE auth_subject=$1", subject))
-	if err == nil {
-		return user, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return User{}, err
-	}
+func (r *Repository) GetOrCreate(ctx context.Context, subject string, email *string, emailVerified bool, displayName string) (User, error) {
 	return scanUser(r.pool.QueryRow(ctx, `
-		INSERT INTO users (auth_subject, email, display_name) VALUES ($1,$2,$3)
-		ON CONFLICT (auth_subject) DO UPDATE SET auth_subject=EXCLUDED.auth_subject
-		RETURNING `+userColumns, subject, email, displayName))
+		INSERT INTO users (auth_subject, email, email_verified, display_name) VALUES ($1,$2,$3,$4)
+		ON CONFLICT (auth_subject) DO UPDATE SET
+			email=EXCLUDED.email,
+			email_verified=EXCLUDED.email_verified,
+			updated_at=CASE WHEN users.email IS DISTINCT FROM EXCLUDED.email OR users.email_verified IS DISTINCT FROM EXCLUDED.email_verified THEN now() ELSE users.updated_at END
+		RETURNING `+userColumns, subject, email, emailVerified, displayName))
 }

@@ -5,12 +5,26 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"travel-planner/travel-planner-api/internal/auth"
 	"travel-planner/travel-planner-api/internal/httpx"
 )
+
+func currentUserID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	user, ok := auth.CurrentUser(r.Context())
+	if !ok {
+		httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return 0, false
+	}
+	return user.ID, true
+}
 
 func Register(r chi.Router, s *Service) {
 	r.Route("/trips/{tripID}/activities", func(r chi.Router) {
 		r.Post("/", func(w http.ResponseWriter, r *http.Request) {
+			userID, ok := currentUserID(w, r)
+			if !ok {
+				return
+			}
 			tripID, err := httpx.ID(r, "tripID")
 			if err != nil {
 				httpx.Error(w, err)
@@ -21,7 +35,7 @@ func Register(r chi.Router, s *Service) {
 				httpx.Error(w, err)
 				return
 			}
-			a, err := s.Create(r.Context(), tripID, in)
+			a, err := s.Create(r.Context(), userID, tripID, in)
 			if err != nil {
 				httpx.Error(w, err)
 				return
@@ -30,6 +44,10 @@ func Register(r chi.Router, s *Service) {
 			httpx.JSON(w, http.StatusCreated, a)
 		})
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			userID, ok := currentUserID(w, r)
+			if !ok {
+				return
+			}
 			tripID, err := httpx.ID(r, "tripID")
 			if err != nil {
 				httpx.Error(w, err)
@@ -40,7 +58,7 @@ func Register(r chi.Router, s *Service) {
 				httpx.Error(w, err)
 				return
 			}
-			items, err := s.List(r.Context(), tripID, limit, offset)
+			items, err := s.List(r.Context(), userID, tripID, limit, offset)
 			if err != nil {
 				httpx.Error(w, err)
 				return
@@ -48,12 +66,16 @@ func Register(r chi.Router, s *Service) {
 			httpx.JSON(w, http.StatusOK, items)
 		})
 		r.Get("/{activityID}", func(w http.ResponseWriter, r *http.Request) {
+			userID, ok := currentUserID(w, r)
+			if !ok {
+				return
+			}
 			tripID, id, err := ids(r)
 			if err != nil {
 				httpx.Error(w, err)
 				return
 			}
-			a, err := s.Get(r.Context(), tripID, id)
+			a, err := s.Get(r.Context(), userID, tripID, id)
 			if err != nil {
 				httpx.Error(w, err)
 				return
@@ -61,6 +83,10 @@ func Register(r chi.Router, s *Service) {
 			httpx.JSON(w, http.StatusOK, a)
 		})
 		r.Put("/{activityID}", func(w http.ResponseWriter, r *http.Request) {
+			userID, ok := currentUserID(w, r)
+			if !ok {
+				return
+			}
 			tripID, id, err := ids(r)
 			if err != nil {
 				httpx.Error(w, err)
@@ -71,7 +97,7 @@ func Register(r chi.Router, s *Service) {
 				httpx.Error(w, err)
 				return
 			}
-			a, err := s.Update(r.Context(), tripID, id, in)
+			a, err := s.Update(r.Context(), userID, tripID, id, in)
 			if err != nil {
 				httpx.Error(w, err)
 				return
@@ -79,12 +105,16 @@ func Register(r chi.Router, s *Service) {
 			httpx.JSON(w, http.StatusOK, a)
 		})
 		r.Delete("/{activityID}", func(w http.ResponseWriter, r *http.Request) {
+			userID, ok := currentUserID(w, r)
+			if !ok {
+				return
+			}
 			tripID, id, err := ids(r)
 			if err != nil {
 				httpx.Error(w, err)
 				return
 			}
-			if err := s.Delete(r.Context(), tripID, id); err != nil {
+			if err := s.Delete(r.Context(), userID, tripID, id); err != nil {
 				httpx.Error(w, err)
 				return
 			}

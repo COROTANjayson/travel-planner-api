@@ -17,9 +17,16 @@ type Store interface {
 	Update(context.Context, int64, int64, Input) (Activity, error)
 	Delete(context.Context, int64, int64) error
 }
-type Service struct{ store Store }
+type Authorizer interface {
+	RequireParticipant(context.Context, int64, int64) error
+	RequireEditor(context.Context, int64, int64) error
+}
+type Service struct {
+	store Store
+	authz Authorizer
+}
 
-func NewService(store Store) *Service { return &Service{store: store} }
+func NewService(store Store, authz Authorizer) *Service { return &Service{store: store, authz: authz} }
 
 func validate(in Input) (Input, error) {
 	in.Title = strings.TrimSpace(in.Title)
@@ -41,26 +48,41 @@ func validate(in Input) (Input, error) {
 	in.StartsAt, in.EndsAt = in.StartsAt.UTC(), in.EndsAt.UTC()
 	return in, nil
 }
-func (s *Service) Create(ctx context.Context, tripID int64, in Input) (Activity, error) {
+func (s *Service) Create(ctx context.Context, userID, tripID int64, in Input) (Activity, error) {
+	if err := s.authz.RequireEditor(ctx, userID, tripID); err != nil {
+		return Activity{}, err
+	}
 	in, err := validate(in)
 	if err != nil {
 		return Activity{}, err
 	}
 	return s.store.Create(ctx, tripID, in)
 }
-func (s *Service) List(ctx context.Context, tripID int64, limit, offset int) ([]Activity, error) {
+func (s *Service) List(ctx context.Context, userID, tripID int64, limit, offset int) ([]Activity, error) {
+	if err := s.authz.RequireParticipant(ctx, userID, tripID); err != nil {
+		return nil, err
+	}
 	return s.store.List(ctx, tripID, limit, offset)
 }
-func (s *Service) Get(ctx context.Context, tripID, id int64) (Activity, error) {
+func (s *Service) Get(ctx context.Context, userID, tripID, id int64) (Activity, error) {
+	if err := s.authz.RequireParticipant(ctx, userID, tripID); err != nil {
+		return Activity{}, err
+	}
 	return s.store.Get(ctx, tripID, id)
 }
-func (s *Service) Update(ctx context.Context, tripID, id int64, in Input) (Activity, error) {
+func (s *Service) Update(ctx context.Context, userID, tripID, id int64, in Input) (Activity, error) {
+	if err := s.authz.RequireEditor(ctx, userID, tripID); err != nil {
+		return Activity{}, err
+	}
 	in, err := validate(in)
 	if err != nil {
 		return Activity{}, err
 	}
 	return s.store.Update(ctx, tripID, id, in)
 }
-func (s *Service) Delete(ctx context.Context, tripID, id int64) error {
+func (s *Service) Delete(ctx context.Context, userID, tripID, id int64) error {
+	if err := s.authz.RequireEditor(ctx, userID, tripID); err != nil {
+		return err
+	}
 	return s.store.Delete(ctx, tripID, id)
 }

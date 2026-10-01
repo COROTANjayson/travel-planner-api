@@ -11,8 +11,9 @@ import (
 )
 
 type claims struct {
-	Email string `json:"email"`
-	Name  string `json:"name"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	Name          string `json:"name"`
 }
 
 func (*claims) Validate(context.Context) error { return nil }
@@ -53,7 +54,7 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 				displayName = profile.Name
 			}
 		}
-		user, err := a.store.GetOrCreate(r.Context(), subject, email, displayName)
+		user, err := a.store.GetOrCreate(r.Context(), subject, email, profile != nil && profile.EmailVerified, displayName)
 		if err != nil {
 			httpx.Error(w, err)
 			return

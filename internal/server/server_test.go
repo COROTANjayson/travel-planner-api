@@ -19,9 +19,15 @@ type failingTrips struct {
 	err error
 }
 
-func (s failingTrips) Get(context.Context, int64, int64) (trips.Trip, error) {
+func (s failingTrips) Get(context.Context, int64) (trips.Trip, error) {
 	return trips.Trip{}, s.err
 }
+
+type allowAuthorizer struct{}
+
+func (allowAuthorizer) RequireParticipant(context.Context, int64, int64) error { return nil }
+func (allowAuthorizer) RequireEditor(context.Context, int64, int64) error      { return nil }
+func (allowAuthorizer) RequireOwner(context.Context, int64, int64) error       { return nil }
 
 func testIdentity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +36,7 @@ func testIdentity(next http.Handler) http.Handler {
 }
 
 func TestTripsRequireAuthenticatedUserContext(t *testing.T) {
-	handler := Router(nil, nil, func(next http.Handler) http.Handler { return next })
+	handler := Router(nil, nil, nil, func(next http.Handler) http.Handler { return next })
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/trips", nil))
 	if w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"unauthorized\"}\n" {
@@ -39,7 +45,7 @@ func TestTripsRequireAuthenticatedUserContext(t *testing.T) {
 }
 
 func TestHealthAndRequestValidation(t *testing.T) {
-	handler := Router(nil, nil, testIdentity)
+	handler := Router(nil, nil, nil, testIdentity)
 	for index, tc := range []struct {
 		method, path, body string
 		status             int
@@ -82,7 +88,7 @@ func TestRepositoryErrors(t *testing.T) {
 		{apperror.ErrNotFound, http.StatusNotFound},
 		{errors.New("secret database detail"), http.StatusInternalServerError},
 	} {
-		handler := Router(trips.NewService(failingTrips{err: tc.err}), nil, testIdentity)
+		handler := Router(trips.NewService(failingTrips{err: tc.err}, allowAuthorizer{}), nil, nil, testIdentity)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/trips/1", nil))
 		if w.Code != tc.status {

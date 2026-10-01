@@ -25,6 +25,10 @@ func Error(w http.ResponseWriter, err error) {
 		JSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, apperror.ErrNotFound):
 		JSON(w, http.StatusNotFound, map[string]string{"error": "resource not found"})
+	case errors.Is(err, apperror.ErrForbidden):
+		JSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+	case errors.Is(err, apperror.ErrConflict):
+		JSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	default:
 		// Do not return or log raw database errors, which can contain user data.
 		slog.Error("request failed", "error_type", fmt.Sprintf("%T", err))

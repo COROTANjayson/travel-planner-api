@@ -14,6 +14,11 @@ type recordingStore struct {
 	input  Input
 }
 
+type allowAuthorizer struct{}
+
+func (allowAuthorizer) RequireParticipant(context.Context, int64, int64) error { return nil }
+func (allowAuthorizer) RequireEditor(context.Context, int64, int64) error      { return nil }
+
 func (r *recordingStore) Create(_ context.Context, tripID int64, in Input) (Activity, error) {
 	r.called, r.input = true, in
 	return Activity{ID: 1, TripID: tripID, Input: in}, nil
@@ -37,14 +42,14 @@ func TestActivityValidationAndUTC(t *testing.T) {
 			in := valid
 			tc.change(&in)
 			repo := &recordingStore{}
-			_, err := NewService(repo).Create(context.Background(), 1, in)
+			_, err := NewService(repo, allowAuthorizer{}).Create(context.Background(), 7, 1, in)
 			if !errors.Is(err, apperror.ErrInvalid) || repo.called {
 				t.Fatalf("invalid activity reached repository: %v", err)
 			}
 		})
 	}
 	repo := &recordingStore{}
-	_, err := NewService(repo).Create(context.Background(), 1, valid)
+	_, err := NewService(repo, allowAuthorizer{}).Create(context.Background(), 7, 1, valid)
 	if err != nil || !repo.called {
 		t.Fatalf("valid activity failed: %v", err)
 	}

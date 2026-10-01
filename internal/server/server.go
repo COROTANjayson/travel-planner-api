@@ -11,13 +11,14 @@ import (
 	"travel-planner/travel-planner-api/internal/auth"
 	"travel-planner/travel-planner-api/internal/httpx"
 	"travel-planner/travel-planner-api/internal/itinerary"
+	"travel-planner/travel-planner-api/internal/memberships"
 	"travel-planner/travel-planner-api/internal/trips"
 )
 
-func New(port string, tripService *trips.Service, itineraryService *itinerary.Service, authenticate func(http.Handler) http.Handler) *http.Server {
+func New(port string, tripService *trips.Service, itineraryService *itinerary.Service, membershipService *memberships.Service, authenticate func(http.Handler) http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              net.JoinHostPort("127.0.0.1", port),
-		Handler:           Router(tripService, itineraryService, authenticate),
+		Handler:           Router(tripService, itineraryService, membershipService, authenticate),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -25,7 +26,7 @@ func New(port string, tripService *trips.Service, itineraryService *itinerary.Se
 	}
 }
 
-func Router(tripService *trips.Service, itineraryService *itinerary.Service, authenticate func(http.Handler) http.Handler) http.Handler {
+func Router(tripService *trips.Service, itineraryService *itinerary.Service, membershipService *memberships.Service, authenticate func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, requestLog, recoverJSON, middleware.Timeout(25*time.Second))
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +37,7 @@ func Router(tripService *trips.Service, itineraryService *itinerary.Service, aut
 		auth.Register(r)
 		trips.Register(r, tripService)
 		itinerary.Register(r, itineraryService)
+		memberships.Register(r, membershipService)
 	})
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusNotFound, map[string]string{"error": "route not found"})

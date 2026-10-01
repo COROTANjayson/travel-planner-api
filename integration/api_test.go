@@ -16,6 +16,7 @@ import (
 	"travel-planner/travel-planner-api/internal/auth"
 	"travel-planner/travel-planner-api/internal/database"
 	"travel-planner/travel-planner-api/internal/itinerary"
+	"travel-planner/travel-planner-api/internal/memberships"
 	"travel-planner/travel-planner-api/internal/server"
 	"travel-planner/travel-planner-api/internal/trips"
 )
@@ -73,7 +74,13 @@ func TestAPILifecycle(t *testing.T) {
 			next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), auth.User{ID: id})))
 		})
 	}
-	handler := server.Router(trips.NewService(trips.NewRepository(pool)), itinerary.NewService(itinerary.NewRepository(pool)), testAuth)
+	membershipService := memberships.NewService(memberships.NewRepository(pool))
+	handler := server.Router(
+		trips.NewService(trips.NewRepository(pool), membershipService),
+		itinerary.NewService(itinerary.NewRepository(pool), membershipService),
+		membershipService,
+		testAuth,
+	)
 	requestAs := func(userID int64, method, path string, body any, status int, target any) {
 		t.Helper()
 		var payload []byte

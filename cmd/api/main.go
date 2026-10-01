@@ -14,6 +14,7 @@ import (
 	"travel-planner/travel-planner-api/internal/config"
 	"travel-planner/travel-planner-api/internal/database"
 	"travel-planner/travel-planner-api/internal/itinerary"
+	"travel-planner/travel-planner-api/internal/memberships"
 	"travel-planner/travel-planner-api/internal/server"
 	"travel-planner/travel-planner-api/internal/trips"
 )
@@ -43,7 +44,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	api := server.New(cfg.Port, trips.NewService(trips.NewRepository(pool)), itinerary.NewService(itinerary.NewRepository(pool)), authenticator.Middleware)
+	membershipService := memberships.NewService(memberships.NewRepository(pool))
+	api := server.New(cfg.Port,
+		trips.NewService(trips.NewRepository(pool), membershipService),
+		itinerary.NewService(itinerary.NewRepository(pool), membershipService),
+		membershipService,
+		authenticator.Middleware,
+	)
 	errs := make(chan error, 1)
 	go func() {
 		slog.Info("starting local API", "address", api.Addr)

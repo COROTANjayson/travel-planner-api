@@ -13,14 +13,23 @@ import (
 type Store interface {
 	Create(context.Context, int64, Input) (Trip, error)
 	List(context.Context, int64, int, int) ([]Trip, error)
-	Get(context.Context, int64, int64) (Trip, error)
-	Update(context.Context, int64, int64, Input) (Trip, error)
-	Delete(context.Context, int64, int64) error
+	Get(context.Context, int64) (Trip, error)
+	Update(context.Context, int64, Input) (Trip, error)
+	Delete(context.Context, int64) error
 }
 
-type Service struct{ store Store }
+type Authorizer interface {
+	RequireParticipant(context.Context, int64, int64) error
+	RequireEditor(context.Context, int64, int64) error
+	RequireOwner(context.Context, int64, int64) error
+}
 
-func NewService(store Store) *Service { return &Service{store: store} }
+type Service struct {
+	store Store
+	authz Authorizer
+}
+
+func NewService(store Store, authz Authorizer) *Service { return &Service{store: store, authz: authz} }
 
 func validate(in Input) (Input, error) {
 	in.Name = strings.TrimSpace(in.Name)
@@ -54,15 +63,24 @@ func (s *Service) List(ctx context.Context, ownerUserID int64, limit, offset int
 	return s.store.List(ctx, ownerUserID, limit, offset)
 }
 func (s *Service) Get(ctx context.Context, ownerUserID, id int64) (Trip, error) {
-	return s.store.Get(ctx, ownerUserID, id)
+	if err := s.authz.RequireParticipant(ctx, ownerUserID, id); err != nil {
+		return Trip{}, err
+	}
+	return s.store.Get(ctx, id)
 }
 func (s *Service) Update(ctx context.Context, ownerUserID, id int64, in Input) (Trip, error) {
+	if err := s.authz.RequireEditor(ctx, ownerUserID, id); err != nil {
+		return Trip{}, err
+	}
 	in, err := validate(in)
 	if err != nil {
 		return Trip{}, err
 	}
-	return s.store.Update(ctx, ownerUserID, id, in)
+	return s.store.Update(ctx, id, in)
 }
 func (s *Service) Delete(ctx context.Context, ownerUserID, id int64) error {
-	return s.store.Delete(ctx, ownerUserID, id)
+	if err := s.authz.RequireOwner(ctx, ownerUserID, id); err != nil {
+		return err
+	}
+	return s.store.Delete(ctx, id)
 }

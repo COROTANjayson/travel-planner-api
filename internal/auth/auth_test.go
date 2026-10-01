@@ -28,14 +28,16 @@ type memoryStore struct {
 	users map[string]User
 }
 
-func (s *memoryStore) GetOrCreate(_ context.Context, subject string, email *string, name string) (User, error) {
+func (s *memoryStore) GetOrCreate(_ context.Context, subject string, email *string, emailVerified bool, name string) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if user, ok := s.users[subject]; ok {
+		user.Email, user.EmailVerified = email, emailVerified
+		s.users[subject] = user
 		return user, nil
 	}
 	now := time.Now().UTC()
-	user := User{ID: int64(len(s.users) + 1), Email: email, DisplayName: name, CreatedAt: now, UpdatedAt: now}
+	user := User{ID: int64(len(s.users) + 1), Email: email, EmailVerified: emailVerified, DisplayName: name, CreatedAt: now, UpdatedAt: now}
 	s.users[subject] = user
 	return user, nil
 }
@@ -92,7 +94,7 @@ func TestAuthenticationAndRegistration(t *testing.T) {
 
 	token := signedToken(t, map[string]any{
 		"iss": testIssuer, "aud": testAudience, "sub": "auth0|123",
-		"exp": time.Now().Add(time.Hour).Unix(), "email": "traveler@example.com", "name": "Traveler",
+		"exp": time.Now().Add(time.Hour).Unix(), "email": "traveler@example.com", "email_verified": true, "name": "Traveler",
 	})
 	for range 2 {
 		w := request(router, token)
@@ -105,6 +107,9 @@ func TestAuthenticationAndRegistration(t *testing.T) {
 	}
 	if len(store.users) != 1 {
 		t.Fatalf("created %d users", len(store.users))
+	}
+	if !store.users["auth0|123"].EmailVerified {
+		t.Fatal("email verification claim was not persisted")
 	}
 
 	withoutProfile := signedToken(t, map[string]any{
