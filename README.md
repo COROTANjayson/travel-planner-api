@@ -134,11 +134,12 @@ All feature endpoints use the `/api/v1` prefix and require an Auth0 bearer acces
 | POST | `/api/v1/trips/{tripID}/transfer-ownership` | Transfer ownership to an existing member |
 | POST | `/api/v1/trips/{tripID}/activities` | Create scheduled activity, HTTP 201 |
 | GET | `/api/v1/trips/{tripID}/activities` | List activities in schedule order |
+| GET | `/api/v1/trips/{tripID}/activities/conflicts` | List advisory overlapping activity pairs as any participant |
 | GET / PUT / DELETE | `/api/v1/trips/{tripID}/activities/{activityID}` | Read / replace / delete an activity within that trip |
 
 Reads and replacements return HTTP 200; deletion returns HTTP 204 with no body. Creation also returns a `Location` header. IDs are positive integers. Missing or invalid authentication returns HTTP 401, invalid input returns HTTP 400, missing resources return HTTP 404, and unexpected errors return HTTP 500. Errors use `{"error":"message"}` without database details.
 
-List endpoints return arrays, including `[]` when empty. Both accept `?limit=50&offset=0`; limit defaults to 50 and is capped at 100. Trips sort by newest ID first; activities sort by start instant and then ID. Listing activities for a nonexistent trip returns HTTP 404.
+List endpoints return arrays, including `[]` when empty. Trip, activity, and conflict lists accept `?limit=50&offset=0`; limit defaults to 50 and is capped at 100. Trips sort by newest ID first; activities sort by start instant and then ID. Conflict pairs sort by overlap start and then both activity IDs before pagination. Listing activities or conflicts for a nonexistent or inaccessible trip returns HTTP 404.
 
 Create a trip:
 
@@ -166,7 +167,17 @@ Dates use `YYYY-MM-DD`; a trip's end date cannot precede its start date. Activit
 
 Deleting a trip also deletes its activities. Activities are always addressed within their parent trip. Days can be derived from activity timestamps in their saved time zones; this first version has no separate day-management endpoint or manual ordering.
 
-Trip dates are planning metadata: this version does not enforce activity containment within those dates or detect overlapping activities. Owners and editors may change trips and activities; members and viewers may read them. Group split/rejoin, templates, expenses, and realtime collaboration remain future work.
+Activity creation and replacement require both local dates, evaluated in the activity's saved IANA zone, to fall within the inclusive trip dates. Valid midnight crossings and overlaps are allowed. Trip date edits do not revalidate existing activities; later activity replacements use the current trip dates.
+
+Activity responses include `created_by_user_id`, assigned from the authenticated creator and preserved through edits, ownership transfers, and membership removal. This field cannot be supplied in POST or PUT JSON.
+
+Owners and editors may change activities; members and viewers may read them and view conflicts. Conflict reporting is advisory: touching endpoints do not overlap, and every overlapping pair within the trip is reported once with ascending IDs and UTC overlap timestamps:
+
+```json
+[{"activity_ids":[1,2],"overlap_starts_at":"2026-10-01T01:30:00Z","overlap_ends_at":"2026-10-01T02:00:00Z"}]
+```
+
+Group split/rejoin, templates, expenses, and realtime collaboration remain future work.
 
 ## Migrations, tests, and build
 
@@ -182,13 +193,13 @@ go vet ./...
 go build -o travel-planner-api.exe ./cmd/api
 ```
 
-Without `TEST_DATABASE_URL`, the integration test explicitly skips; unit and handler tests still run. With it, tests exercise actual PostgreSQL persistence, trip and activity CRUD, UTC conversion, pagination, parent-trip isolation, and cascading deletion. They remove only the trips they create. Validation tests cover invalid dates, time zones, IDs, JSON, and pagination.
+Without `TEST_DATABASE_URL`, integration tests explicitly skip; unit and handler tests still run. With it, tests exercise actual PostgreSQL persistence, CRUD, role permissions, creator identity and retention, date-boundary failures, UTC conversion, conflict ordering and pagination, parent-trip isolation, and cascading deletion. They remove only their own fixtures. Validation tests cover invalid dates, time zones, IDs, JSON, pagination, midnight crossings, and daylight-saving transitions.
 
-The migrations create trips, itinerary items, local users, trip ownership, memberships, and hashed invitations. The ownership migration intentionally stops if legacy trips exist; reset local trip data or perform a reviewed one-off owner assignment before rerunning it. To check the latest migration rollback on the disposable test database only:
+The migrations create trips, itinerary items, local users, trip ownership, memberships, hashed invitations, and activity creators. The ownership migration intentionally stops if legacy trips exist; reset local trip data or perform a reviewed one-off owner assignment before rerunning it. The creator migration backfills existing activities from their current trip owner before enforcing a required user foreign key. Apply it before running the updated API. To check the latest migration rollback on the disposable test database only:
 
 ```bash
 goose -dir migrations postgres "$TEST_DATABASE_URL" down
 goose -dir migrations postgres "$TEST_DATABASE_URL" up
 ```
 
-One rollback removes trip ownership. Development migrations are run explicitly before starting the API.
+One rollback removes activity creator metadata and its index while retaining activities. Reapplying backfills creators from the current trip owners again. Development migrations are run explicitly before starting the API.

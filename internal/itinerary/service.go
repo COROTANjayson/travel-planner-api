@@ -11,7 +11,9 @@ import (
 )
 
 type Store interface {
-	Create(context.Context, int64, Input) (Activity, error)
+	Create(context.Context, int64, int64, Input) (Activity, error)
+	TripDates(context.Context, int64) (time.Time, time.Time, error)
+	Conflicts(context.Context, int64, int, int) ([]Conflict, error)
 	List(context.Context, int64, int, int) ([]Activity, error)
 	Get(context.Context, int64, int64) (Activity, error)
 	Update(context.Context, int64, int64, Input) (Activity, error)
@@ -42,21 +44,41 @@ func validate(in Input) (Input, error) {
 	if in.TimeZone == "" || in.TimeZone == "Local" {
 		return in, fmt.Errorf("%w: time_zone must be an explicit IANA time zone", apperror.ErrInvalid)
 	}
-	if _, err := time.LoadLocation(in.TimeZone); err != nil {
-		return in, fmt.Errorf("%w: unknown time_zone", apperror.ErrInvalid)
-	}
 	in.StartsAt, in.EndsAt = in.StartsAt.UTC(), in.EndsAt.UTC()
 	return in, nil
 }
+func (s *Service) validateForTrip(ctx context.Context, tripID int64, in Input) (Input, error) {
+	in, err := validate(in)
+	if err != nil {
+		return in, err
+	}
+	zone, err := time.LoadLocation(in.TimeZone)
+	if err != nil {
+		return in, fmt.Errorf("%w: unknown time_zone", apperror.ErrInvalid)
+	}
+	startDate, endDate, err := s.store.TripDates(ctx, tripID)
+	if err != nil {
+		return in, err
+	}
+	for _, instant := range []time.Time{in.StartsAt, in.EndsAt} {
+		year, month, day := instant.In(zone).Date()
+		date := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+		if date.Before(startDate) || date.After(endDate) {
+			return in, fmt.Errorf("%w: activity local dates must fall within trip dates", apperror.ErrInvalid)
+		}
+	}
+	return in, nil
+}
+
 func (s *Service) Create(ctx context.Context, userID, tripID int64, in Input) (Activity, error) {
 	if err := s.authz.RequireEditor(ctx, userID, tripID); err != nil {
 		return Activity{}, err
 	}
-	in, err := validate(in)
+	in, err := s.validateForTrip(ctx, tripID, in)
 	if err != nil {
 		return Activity{}, err
 	}
-	return s.store.Create(ctx, tripID, in)
+	return s.store.Create(ctx, userID, tripID, in)
 }
 func (s *Service) List(ctx context.Context, userID, tripID int64, limit, offset int) ([]Activity, error) {
 	if err := s.authz.RequireParticipant(ctx, userID, tripID); err != nil {
@@ -74,7 +96,7 @@ func (s *Service) Update(ctx context.Context, userID, tripID, id int64, in Input
 	if err := s.authz.RequireEditor(ctx, userID, tripID); err != nil {
 		return Activity{}, err
 	}
-	in, err := validate(in)
+	in, err := s.validateForTrip(ctx, tripID, in)
 	if err != nil {
 		return Activity{}, err
 	}
@@ -85,4 +107,11 @@ func (s *Service) Delete(ctx context.Context, userID, tripID, id int64) error {
 		return err
 	}
 	return s.store.Delete(ctx, tripID, id)
+}
+
+func (s *Service) Conflicts(ctx context.Context, userID, tripID int64, limit, offset int) ([]Conflict, error) {
+	if err := s.authz.RequireParticipant(ctx, userID, tripID); err != nil {
+		return nil, err
+	}
+	return s.store.Conflicts(ctx, tripID, limit, offset)
 }

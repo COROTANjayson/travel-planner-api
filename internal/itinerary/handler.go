@@ -65,6 +65,28 @@ func Register(r chi.Router, s *Service) {
 			}
 			httpx.JSON(w, http.StatusOK, items)
 		})
+		r.Get("/conflicts", func(w http.ResponseWriter, r *http.Request) {
+			userID, ok := currentUserID(w, r)
+			if !ok {
+				return
+			}
+			tripID, err := httpx.ID(r, "tripID")
+			if err != nil {
+				httpx.Error(w, err)
+				return
+			}
+			limit, offset, err := httpx.Pagination(r)
+			if err != nil {
+				httpx.Error(w, err)
+				return
+			}
+			items, err := s.Conflicts(r.Context(), userID, tripID, limit, offset)
+			if err != nil {
+				httpx.Error(w, err)
+				return
+			}
+			httpx.JSON(w, http.StatusOK, items)
+		})
 		r.Get("/{activityID}", func(w http.ResponseWriter, r *http.Request) {
 			userID, ok := currentUserID(w, r)
 			if !ok {
