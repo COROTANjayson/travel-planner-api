@@ -136,6 +136,9 @@ All feature endpoints use the `/api/v1` prefix and require an Auth0 bearer acces
 | GET | `/api/v1/trips/{tripID}/activities` | List activities in schedule order |
 | GET | `/api/v1/trips/{tripID}/activities/conflicts` | List advisory overlapping activity pairs as any participant |
 | GET / PUT / DELETE | `/api/v1/trips/{tripID}/activities/{activityID}` | Read / replace / delete an activity within that trip |
+| GET | `/api/v1/places/search?q=...` | Submit-only OSM place search, at most 10 results |
+| POST | `/api/v1/places/resolve` | Refresh and save an OSM object reference such as `{"provider_place_id":"N123"}` |
+| GET | `/api/v1/places/{placeID}` | Read a normalized saved place |
 
 Reads and replacements return HTTP 200; deletion returns HTTP 204 with no body. Creation also returns a `Location` header. IDs are positive integers. Missing or invalid authentication returns HTTP 401, invalid input returns HTTP 400, missing resources return HTTP 404, and unexpected errors return HTTP 500. Errors use `{"error":"message"}` without database details.
 
@@ -179,6 +182,8 @@ Owners and editors may change activities; members and viewers may read them and 
 
 Group split/rejoin, templates, expenses, and realtime collaboration remain future work.
 
+Activities may also include nullable `place_id`. Activity reads include the saved `place` object from PostgreSQL; clearing or deleting a place leaves the activity title and notes intact. OpenFreeMap renders the trip map without a key. Place search uses Nominatim only after a user submits a query, with a 24-hour result cache, a 10-searches-per-user-per-minute limit, and at most one outbound request per second across this single API instance. Public Nominatim is suitable here only for modest demo traffic. Travel-time estimates remain future work.
+
 ## Migrations, tests, and build
 
 Apply migrations to the separate test database before integration tests:
@@ -202,4 +207,4 @@ goose -dir migrations postgres "$TEST_DATABASE_URL" down
 goose -dir migrations postgres "$TEST_DATABASE_URL" up
 ```
 
-One rollback removes activity creator metadata and its index while retaining activities. Reapplying backfills creators from the current trip owners again. Development migrations are run explicitly before starting the API.
+The latest rollback removes places and their activity references while retaining activities. Reapplying restores the place schema; existing place selections must be resolved again. Development migrations are run explicitly before starting the API.

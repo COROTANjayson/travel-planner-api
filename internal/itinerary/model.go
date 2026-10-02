@@ -1,6 +1,9 @@
 package itinerary
 
-import "time"
+import (
+	"time"
+	"travel-planner/travel-planner-api/internal/places"
+)
 
 type Input struct {
 	Title    string    `json:"title"`
@@ -8,6 +11,7 @@ type Input struct {
 	EndsAt   time.Time `json:"ends_at"`
 	TimeZone string    `json:"time_zone"`
 	Notes    string    `json:"notes"`
+	PlaceID  *int64    `json:"place_id"`
 }
 
 type Activity struct {
@@ -15,8 +19,9 @@ type Activity struct {
 	TripID          int64 `json:"trip_id"`
 	CreatedByUserID int64 `json:"created_by_user_id"`
 	Input
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Place     *places.Place `json:"place"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
 }
 
 type Conflict struct {

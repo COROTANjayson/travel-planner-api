@@ -7,4 +7,8 @@ coverage.out
 
 
 travel-planner.md
-/docs
+/docs/*
+!/docs/backend/
+/docs/backend/*
+!/docs/backend/README.md
+!/docs/backend/06-places-and-maps.md

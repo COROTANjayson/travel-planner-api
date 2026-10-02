@@ -36,6 +36,9 @@ func validate(in Input) (Input, error) {
 	if in.Title == "" || len(in.Title) > 200 || len(in.Notes) > 10000 {
 		return in, fmt.Errorf("%w: title (up to 200 bytes) is required and notes must be at most 10000 bytes", apperror.ErrInvalid)
 	}
+	if in.PlaceID != nil && *in.PlaceID <= 0 {
+		return in, fmt.Errorf("%w: place_id must be a positive integer", apperror.ErrInvalid)
+	}
 	if in.StartsAt.IsZero() || in.EndsAt.IsZero() || !in.EndsAt.After(in.StartsAt) ||
 		in.StartsAt.UTC().Year() < 1 || in.StartsAt.UTC().Year() > 9999 ||
 		in.EndsAt.UTC().Year() < 1 || in.EndsAt.UTC().Year() > 9999 {

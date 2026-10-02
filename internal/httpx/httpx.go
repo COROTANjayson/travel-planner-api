@@ -29,6 +29,10 @@ func Error(w http.ResponseWriter, err error) {
 		JSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 	case errors.Is(err, apperror.ErrConflict):
 		JSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, apperror.ErrRateLimited):
+		JSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many place requests; try again shortly"})
+	case errors.Is(err, apperror.ErrUnavailable):
+		JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "place search is temporarily unavailable"})
 	default:
 		// Do not return or log raw database errors, which can contain user data.
 		slog.Error("request failed", "error_type", fmt.Sprintf("%T", err))

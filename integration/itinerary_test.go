@@ -11,13 +11,16 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	tzf "github.com/ringsaturn/tzf/v2"
 	"travel-planner/travel-planner-api/internal/auth"
 	"travel-planner/travel-planner-api/internal/database"
 	"travel-planner/travel-planner-api/internal/itinerary"
 	"travel-planner/travel-planner-api/internal/memberships"
+	"travel-planner/travel-planner-api/internal/places"
 	"travel-planner/travel-planner-api/internal/server"
 	"travel-planner/travel-planner-api/internal/trips"
 )
@@ -52,6 +55,7 @@ func TestItineraryPermissionsScheduleAndCreators(t *testing.T) {
 	}
 	owner, editor, member, viewer, outsider := addUser("owner"), addUser("editor"), addUser("member"), addUser("viewer"), addUser("outsider")
 	var tripIDs []int64
+	var placeIDs []int64
 	t.Cleanup(func() {
 		cleanupPool, err := database.Open(context.Background(), url)
 		if err != nil {
@@ -65,6 +69,14 @@ func TestItineraryPermissionsScheduleAndCreators(t *testing.T) {
 			if _, err := cleanupPool.Exec(cleanupCtx, "DELETE FROM trips WHERE id=$1", id); err != nil {
 				t.Error(err)
 			}
+		}
+		for _, id := range placeIDs {
+			if _, err := cleanupPool.Exec(cleanupCtx, "DELETE FROM places WHERE id=$1", id); err != nil {
+				t.Error(err)
+			}
+		}
+		if _, err := cleanupPool.Exec(cleanupCtx, "DELETE FROM place_search_cache WHERE query IN ('manila','cebu')"); err != nil {
+			t.Error(err)
 		}
 		if _, err := cleanupPool.Exec(cleanupCtx, "DELETE FROM users WHERE auth_subject LIKE $1", prefix+"%"); err != nil {
 			t.Error(err)
@@ -81,7 +93,31 @@ func TestItineraryPermissionsScheduleAndCreators(t *testing.T) {
 		})
 	}
 	authz := memberships.NewService(memberships.NewRepository(pool))
-	handler := server.Router(trips.NewService(trips.NewRepository(pool), authz), itinerary.NewService(itinerary.NewRepository(pool), authz), authz, identity)
+	var providerCalls atomic.Int64
+	var lastProviderCall atomic.Int64
+	var providerUnavailable atomic.Bool
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		arrived := time.Now().UnixNano()
+		if previous := lastProviderCall.Swap(arrived); previous != 0 && arrived-previous < int64(900*time.Millisecond) {
+			t.Error("outbound provider calls exceeded one request per second")
+		}
+		if !strings.Contains(r.Header.Get("User-Agent"), "TravelPlannerPortfolio") {
+			t.Error("provider request lacks app identification")
+		}
+		if providerUnavailable.Load() {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"osm_type":"node","osm_id":987654321,"display_name":"City Hall, Manila, Philippines","lat":"14.5946","lon":"120.978","namedetails":{"name":"City Hall"}}]`))
+	}))
+	defer providerServer.Close()
+	finder, err := tzf.NewEmbeddedFinder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeService := places.NewService(places.NewRepository(pool), places.NewNominatim(providerServer.URL, &http.Client{Timeout: 5 * time.Second}), finder.GetTimezoneName)
+	handler := server.Router(trips.NewService(trips.NewRepository(pool), authz), itinerary.NewService(itinerary.NewRepository(pool), authz), authz, identity, placeService)
 	request := func(userID int64, method, path string, body any, want int, target any) *httptest.ResponseRecorder {
 		t.Helper()
 		var payload []byte
@@ -191,6 +227,64 @@ func TestItineraryPermissionsScheduleAndCreators(t *testing.T) {
 	request(owner, "GET", base, nil, 200, &activities)
 	if len(activities) != 1 {
 		t.Fatal("failed creation wrote an activity")
+	}
+	if _, err := pool.Exec(ctx, "DELETE FROM place_search_cache WHERE query IN ('manila','cebu')"); err != nil {
+		t.Fatal(err)
+	}
+	request(0, "GET", "/api/v1/places/search?q=Manila", nil, 401, nil)
+	request(owner, "GET", "/api/v1/places/search?q=M", nil, 400, nil)
+	var found []places.Candidate
+	request(owner, "GET", "/api/v1/places/search?q=Manila", nil, 200, &found)
+	request(owner, "GET", "/api/v1/places/search?q=manila", nil, 200, &found)
+	if len(found) != 1 || found[0].ProviderPlaceID != "N987654321" || found[0].TimeZone != "Asia/Manila" || providerCalls.Load() != 1 {
+		t.Fatalf("normalized cached search failed: %+v, calls=%d", found, providerCalls.Load())
+	}
+	if _, err := pool.Exec(ctx, "UPDATE place_search_cache SET expires_at=now()-interval '1 second' WHERE query='manila'"); err != nil {
+		t.Fatal(err)
+	}
+	request(owner, "GET", "/api/v1/places/search?q=Manila", nil, 200, &found)
+	if providerCalls.Load() != 2 {
+		t.Fatal("expired search cache did not refresh")
+	}
+	providerUnavailable.Store(true)
+	request(owner, "GET", "/api/v1/places/search?q=Cebu", nil, 503, nil)
+	providerUnavailable.Store(false)
+	request(owner, "POST", "/api/v1/places/resolve", map[string]string{"provider_place_id": "https://example.com"}, 400, nil)
+	var resolved places.Place
+	request(owner, "POST", "/api/v1/places/resolve", map[string]string{"provider_place_id": "N987654321"}, 200, &resolved)
+	placeID := resolved.ID
+	request(viewer, "GET", fmt.Sprintf("/api/v1/places/%d", placeID), nil, 200, &resolved)
+	if resolved.TimeZone != "Asia/Manila" {
+		t.Fatal("place lookup did not persist time zone")
+	}
+	request(owner, "POST", "/api/v1/places/resolve", map[string]string{"provider_place_id": "N987654321"}, 200, &resolved)
+	if resolved.ID != placeID {
+		t.Fatal("resolve duplicated place")
+	}
+	placeIDs = append(placeIDs, placeID)
+	located := in
+	located.PlaceID = &placeID
+	request(member, "PUT", path, located, 403, nil)
+	request(outsider, "PUT", path, located, 404, nil)
+	var withPlace itinerary.Activity
+	request(owner, "PUT", path, located, 200, &withPlace)
+	if withPlace.Place == nil || withPlace.Place.ID != placeID || withPlace.Place.TimeZone != "Asia/Manila" {
+		t.Fatalf("place missing from activity: %+v", withPlace)
+	}
+	request(viewer, "GET", path, nil, 200, &withPlace)
+	if withPlace.Place == nil || withPlace.Place.Name != "City Hall" {
+		t.Fatal("database-only place read failed")
+	}
+	missingPlace := int64(9223372036854775807)
+	located.PlaceID = &missingPlace
+	request(owner, "PUT", path, located, 400, nil)
+	if _, err := pool.Exec(ctx, "DELETE FROM places WHERE id=$1", placeID); err != nil {
+		t.Fatal(err)
+	}
+	placeIDs = nil
+	request(owner, "GET", path, nil, 200, &withPlace)
+	if withPlace.PlaceID != nil || withPlace.Place != nil || withPlace.Title != in.Title || withPlace.Notes != in.Notes {
+		t.Fatalf("place deletion changed activity snapshot: %+v", withPlace)
 	}
 	// A trip-date edit remains allowed; subsequent activity writes use the new dates.
 	tripInput.StartDate = "2026-10-02"

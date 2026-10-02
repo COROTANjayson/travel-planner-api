@@ -10,11 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	tzf "github.com/ringsaturn/tzf/v2"
 	"travel-planner/travel-planner-api/internal/auth"
 	"travel-planner/travel-planner-api/internal/config"
 	"travel-planner/travel-planner-api/internal/database"
 	"travel-planner/travel-planner-api/internal/itinerary"
 	"travel-planner/travel-planner-api/internal/memberships"
+	"travel-planner/travel-planner-api/internal/places"
 	"travel-planner/travel-planner-api/internal/server"
 	"travel-planner/travel-planner-api/internal/trips"
 )
@@ -45,11 +47,17 @@ func run() error {
 		return err
 	}
 	membershipService := memberships.NewService(memberships.NewRepository(pool))
+	finder, err := tzf.NewEmbeddedFinder()
+	if err != nil {
+		return err
+	}
+	placeService := places.NewService(places.NewRepository(pool), places.NewNominatim("https://nominatim.openstreetmap.org", &http.Client{Timeout: 5 * time.Second}), finder.GetTimezoneName)
 	api := server.New(cfg.Port,
 		trips.NewService(trips.NewRepository(pool), membershipService),
 		itinerary.NewService(itinerary.NewRepository(pool), membershipService),
 		membershipService,
 		authenticator.Middleware,
+		placeService,
 	)
 	errs := make(chan error, 1)
 	go func() {
