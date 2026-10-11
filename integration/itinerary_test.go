@@ -143,7 +143,10 @@ func TestItineraryPermissionsScheduleAndCreators(t *testing.T) {
 		}
 		return w
 	}
-	tripInput := trips.Input{Name: "Itinerary test", Destination: "Cebu", StartDate: "2026-10-01", EndDate: "2026-10-03", TimeZone: "Asia/Manila"}
+	destinationID := destinationFixture(t, ctx, pool, url)
+	tripStart := time.Date(2026, 9, 30, 18, 0, 0, 0, time.UTC) // October 1, 02:00 in Manila.
+	tripEnd := time.Date(2026, 10, 3, 15, 0, 0, 0, time.UTC)   // October 3, 23:00 in Manila.
+	tripInput := trips.Input{Name: "Itinerary test", DestinationPlaceID: &destinationID, StartsAt: &tripStart, EndsAt: &tripEnd}
 	var trip, other trips.Trip
 	request(owner, "POST", "/api/v1/trips", tripInput, 201, &trip)
 	tripIDs = append(tripIDs, trip.ID)
@@ -164,6 +167,40 @@ func TestItineraryPermissionsScheduleAndCreators(t *testing.T) {
 	var original itinerary.Activity
 	request(owner, "POST", base, in, 201, &original)
 	path := fmt.Sprintf("%s/%d", base, original.ID)
+	rangeURL := fmt.Sprintf("%s?start_from=%s&start_before=%s", base, start.Format(time.RFC3339), start.Add(time.Minute).Format(time.RFC3339))
+	var ranged []itinerary.Activity
+	request(owner, "GET", rangeURL, nil, 200, &ranged)
+	if len(ranged) != 1 || ranged[0].ID != original.ID {
+		t.Fatalf("date range = %+v", ranged)
+	}
+	request(owner, "GET", rangeURL+"&limit=1&offset=1", nil, 200, &ranged)
+	if len(ranged) != 0 {
+		t.Fatal("date range pagination must follow filtering")
+	}
+	request(owner, "GET", base+"?start_from=bad&start_before=bad", nil, 400, nil)
+	request(owner, "GET", fmt.Sprintf("%s?start_from=%s&start_before=%s", base, start.Add(time.Minute).Format(time.RFC3339), start.Format(time.RFC3339)), nil, 400, nil)
+	for _, invalid := range []itinerary.Input{
+		{Title: "Too early", StartsAt: tripStart.Add(-time.Minute), EndsAt: tripStart.Add(time.Hour)},
+		{Title: "Too late", StartsAt: tripEnd.Add(-time.Hour), EndsAt: tripEnd.Add(time.Minute)},
+	} {
+		request(owner, "POST", base, invalid, 400, nil)
+	}
+	var overlapping []itinerary.Activity
+	query := fmt.Sprintf("%s/overlaps?starts_at=%s&ends_at=%s", base, start.Add(30*time.Minute).Format(time.RFC3339), start.Add(90*time.Minute).Format(time.RFC3339))
+	request(viewer, "GET", query, nil, 200, &overlapping)
+	if len(overlapping) != 1 || overlapping[0].ID != original.ID {
+		t.Fatalf("overlaps = %+v", overlapping)
+	}
+	request(owner, "GET", query+fmt.Sprintf("&exclude_id=%d", original.ID), nil, 200, &overlapping)
+	if len(overlapping) != 0 {
+		t.Fatal("edited activity overlapped itself")
+	}
+	query = fmt.Sprintf("%s/overlaps?starts_at=%s&ends_at=%s", base, start.Add(time.Hour).Format(time.RFC3339), start.Add(2*time.Hour).Format(time.RFC3339))
+	request(owner, "GET", query, nil, 200, &overlapping)
+	if len(overlapping) != 0 {
+		t.Fatal("touching endpoints must not overlap")
+	}
+	request(owner, "GET", base+"/overlaps?starts_at=bad", nil, 400, nil)
 	for _, tc := range []struct {
 		name        string
 		id          int64
@@ -286,21 +323,37 @@ func TestItineraryPermissionsScheduleAndCreators(t *testing.T) {
 	if withPlace.PlaceID != nil || withPlace.Place != nil || withPlace.Title != in.Title || withPlace.Notes != in.Notes {
 		t.Fatalf("place deletion changed activity snapshot: %+v", withPlace)
 	}
-	// A trip-date edit remains allowed; subsequent activity writes use the new dates.
-	tripInput.StartDate = "2026-10-02"
-	request(owner, "PUT", fmt.Sprintf("/api/v1/trips/%d", trip.ID), tripInput, 200, nil)
+	// A trip edit cannot strand an existing activity outside its new window.
+	lateStart := time.Date(2026, 10, 1, 16, 0, 0, 0, time.UTC)
+	tripInput.StartsAt = &lateStart
+	request(owner, "PUT", fmt.Sprintf("/api/v1/trips/%d", trip.ID), tripInput, 409, nil)
 	request(owner, "GET", path, nil, 200, nil)
-	request(owner, "PUT", path, in, 400, nil)
-	tripInput.StartDate = "2026-10-01"
+	tripInput.StartsAt = &tripStart
+	var newDestinationID int64
+	err = pool.QueryRow(ctx, `INSERT INTO places (provider_place_id,kind,name,address,latitude,longitude,time_zone,refreshed_at)
+		VALUES ($1,'city','New York','New York, USA',40.7128,-74.006,'America/New_York',now()) RETURNING id`,
+		"N"+strconv.FormatInt(time.Now().UnixNano(), 10)).Scan(&newDestinationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeIDs = append(placeIDs, newDestinationID)
+	tripInput.DestinationPlaceID = &newDestinationID
 	request(owner, "PUT", fmt.Sprintf("/api/v1/trips/%d", trip.ID), tripInput, 200, nil)
-	// Full replacement clears omitted notes and uses the activity zone, not the trip zone.
-	travel := map[string]any{"title": "Travel", "starts_at": "2026-10-03T23:00:00-07:00", "ends_at": "2026-10-03T23:30:00-07:00", "time_zone": "America/Los_Angeles", "notes": "Travel notes"}
+	var movedZone itinerary.Activity
+	request(owner, "GET", path, nil, 200, &movedZone)
+	if movedZone.TimeZone != "America/New_York" || !movedZone.StartsAt.Equal(original.StartsAt) {
+		t.Fatal("trip zone edit shifted activity instant")
+	}
+	tripInput.DestinationPlaceID = &destinationID
+	request(owner, "PUT", fmt.Sprintf("/api/v1/trips/%d", trip.ID), tripInput, 200, nil)
+	// Full replacement clears omitted notes and derives the activity zone from the trip.
+	travel := map[string]any{"title": "Travel", "starts_at": "2026-10-03T14:00:00+08:00", "ends_at": "2026-10-03T14:30:00+08:00", "time_zone": "America/Los_Angeles", "notes": "Travel notes"}
 	var authored itinerary.Activity
 	request(editor, "POST", base, travel, 201, &authored)
 	authoredPath := fmt.Sprintf("%s/%d", base, authored.ID)
 	delete(travel, "notes")
 	request(owner, "PUT", authoredPath, travel, 200, &authored)
-	if authored.CreatedByUserID != editor || authored.Notes != "" || authored.StartsAt.Location() != time.UTC {
+	if authored.CreatedByUserID != editor || authored.Notes != "" || authored.StartsAt.Location() != time.UTC || authored.TimeZone != "Asia/Manila" {
 		t.Fatal("replacement lost authorship, notes default, or UTC normalization")
 	}
 	request(owner, "POST", fmt.Sprintf("/api/v1/trips/%d/transfer-ownership", trip.ID), memberships.TransferInput{UserID: editor}, 204, nil)

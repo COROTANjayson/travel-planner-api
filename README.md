@@ -135,8 +135,9 @@ All feature endpoints use the `/api/v1` prefix and require an Auth0 bearer acces
 | POST | `/api/v1/trips/{tripID}/activities` | Create scheduled activity, HTTP 201 |
 | GET | `/api/v1/trips/{tripID}/activities` | List activities in schedule order |
 | GET | `/api/v1/trips/{tripID}/activities/conflicts` | List advisory overlapping activity pairs as any participant |
+| GET | `/api/v1/trips/{tripID}/activities/overlaps?starts_at=...&ends_at=...&exclude_id=...` | Check a proposed interval against up to 10 saved activities; `exclude_id` is optional |
 | GET / PUT / DELETE | `/api/v1/trips/{tripID}/activities/{activityID}` | Read / replace / delete an activity within that trip |
-| GET | `/api/v1/places/search?q=...` | Submit-only OSM place search, at most 10 results |
+| GET | `/api/v1/places/search?q=...` | Submit-only OSM place search, at most 10 results; use `scope=destination` for cities and countries |
 | POST | `/api/v1/places/resolve` | Refresh and save an OSM object reference such as `{"provider_place_id":"N123"}` |
 | GET | `/api/v1/places/{placeID}` | Read a normalized saved place |
 
@@ -151,7 +152,7 @@ ACCESS_TOKEN=YOUR_AUTH0_ACCESS_TOKEN
 curl --fail-with-body http://127.0.0.1:8080/api/v1/trips \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Cebu weekend","destination":"Cebu","start_date":"2026-10-01","end_date":"2026-10-03","time_zone":"Asia/Manila"}'
+  -d '{"name":"Cebu weekend","destination_place_id":123,"starts_at":"2026-10-01T01:00:00Z","ends_at":"2026-10-03T10:00:00Z"}'
 ```
 
 Create an activity using the trip ID returned above:
@@ -161,16 +162,18 @@ TRIP_ID=1  # Replace with the returned trip ID.
 curl --fail-with-body "http://127.0.0.1:8080/api/v1/trips/$TRIP_ID/activities" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"title":"Breakfast","starts_at":"2026-10-01T09:00:00+08:00","ends_at":"2026-10-01T10:00:00+08:00","time_zone":"Asia/Manila","notes":"Near the hotel"}'
+  -d '{"title":"Breakfast","starts_at":"2026-10-01T09:00:00+08:00","ends_at":"2026-10-01T10:00:00+08:00","notes":"Near the hotel"}'
 ```
 
-Use the same fields with `PUT` to replace a resource. Trip fields are required. Activity fields are required except `notes`, which defaults to an empty string.
+First search with `scope=destination`, then resolve a selected `provider_place_id` to obtain its local `id` for `destination_place_id`. Use the same fields with `PUT` to replace a resource. Trip fields are required. Activity fields are required except `notes`, which defaults to an empty string.
 
-Dates use `YYYY-MM-DD`; a trip's end date cannot precede its start date. Activity times require RFC3339 timestamps with an explicit offset or `Z`, and the end must be after the start. The API stores timestamp instants in PostgreSQL `TIMESTAMPTZ` and returns UTC, while preserving an explicit IANA zone such as `Asia/Manila`. Activities can have their own zones for travel across time zones. Unknown JSON fields and bodies over 1 MiB are rejected.
+Trips can use inclusive `start_date` and `end_date` values (`YYYY-MM-DD`) with both `starts_at` and `ends_at` omitted or null. Same-day trips are allowed. For example: `{"name":"Cebu weekend","destination_place_id":123,"start_date":"2026-10-01","end_date":"2026-10-03"}`. Exact times are optional as a pair of ordered RFC3339 timestamps with an explicit offset or `Z`; when supplied, their local dates must match any supplied dates. Existing timestamp-only requests remain supported. A PUT with dates and null or omitted times removes the precise time restriction.
 
-Deleting a trip also deletes its activities. Activities are always addressed within their parent trip. Days can be derived from activity timestamps in their saved time zones; this first version has no separate day-management endpoint or manual ordering.
+The API derives the trip destination and IANA time zone from the selected place, and each activity's zone from its trip. Activities still require exact times. For date-only trips, both activity endpoints must fall on the selected local dates; for trips with exact times, activities must fit within that interval. Trip edits that exclude existing activities return 409. Instants are stored as `TIMESTAMPTZ` and returned in UTC. Unknown JSON fields and bodies over 1 MiB are rejected.
 
-Activity creation and replacement require both local dates, evaluated in the activity's saved IANA zone, to fall within the inclusive trip dates. Valid midnight crossings and overlaps are allowed. Trip date edits do not revalidate existing activities; later activity replacements use the current trip dates.
+Deleting a trip also deletes its activities. Activities are always addressed within their parent trip. Days can be derived from activity timestamps in the trip time zone; this version has no separate day-management endpoint or manual ordering.
+
+Activity creation and replacement require their complete interval to fit within the trip's exact start and end instants. Trip edits that would exclude a saved activity return HTTP 409. Existing activity instants are preserved when the trip zone changes. Overlaps are advisory and allowed; the `overlaps` endpoint accepts a proposed RFC3339 interval and optionally excludes the activity being edited.
 
 Activity responses include `created_by_user_id`, assigned from the authenticated creator and preserved through edits, ownership transfers, and membership removal. This field cannot be supplied in POST or PUT JSON.
 
@@ -207,4 +210,4 @@ goose -dir migrations postgres "$TEST_DATABASE_URL" down
 goose -dir migrations postgres "$TEST_DATABASE_URL" up
 ```
 
-The latest rollback removes places and their activity references while retaining activities. Reapplying restores the place schema; existing place selections must be resolved again. Development migrations are run explicitly before starting the API.
+The latest rollback removes the destination and exact-window columns on a disposable test database. Development migrations are run explicitly before starting the API.

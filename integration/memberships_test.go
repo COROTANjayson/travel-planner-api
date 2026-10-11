@@ -120,7 +120,10 @@ func TestMembershipLifecycle(t *testing.T) {
 		return w
 	}
 
-	tripInput := trips.Input{Name: "Shared trip", Destination: "Cebu", StartDate: "2026-10-01", EndDate: "2026-10-03", TimeZone: "Asia/Manila"}
+	placeID := destinationFixture(t, ctx, pool, url)
+	tripStart := time.Date(2026, 9, 30, 16, 0, 0, 0, time.UTC)
+	tripEnd := time.Date(2026, 10, 3, 15, 59, 59, 0, time.UTC)
+	tripInput := trips.Input{Name: "Shared trip", DestinationPlaceID: &placeID, StartsAt: &tripStart, EndsAt: &tripEnd}
 	var trip trips.Trip
 	request(ownerID, http.MethodPost, "/api/v1/trips", tripInput, http.StatusCreated, &trip)
 	base := fmt.Sprintf("/api/v1/trips/%d", trip.ID)

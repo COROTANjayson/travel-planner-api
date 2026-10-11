@@ -15,11 +15,11 @@ type Repository struct{ pool *pgxpool.Pool }
 
 func NewRepository(pool *pgxpool.Pool) *Repository { return &Repository{pool: pool} }
 
-const placeColumns = "id, provider, provider_place_id, name, address, latitude, longitude, time_zone, refreshed_at, created_at, updated_at"
+const placeColumns = "id, provider, provider_place_id, kind, name, address, latitude, longitude, time_zone, refreshed_at, created_at, updated_at"
 
 func scan(row pgx.Row) (Place, error) {
 	var p Place
-	err := row.Scan(&p.ID, &p.Provider, &p.ProviderPlaceID, &p.Name, &p.Address, &p.Latitude, &p.Longitude, &p.TimeZone, &p.RefreshedAt, &p.CreatedAt, &p.UpdatedAt)
+	err := row.Scan(&p.ID, &p.Provider, &p.ProviderPlaceID, &p.Kind, &p.Name, &p.Address, &p.Latitude, &p.Longitude, &p.TimeZone, &p.RefreshedAt, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, apperror.ErrNotFound
 	}
@@ -31,12 +31,12 @@ func (r *Repository) Get(ctx context.Context, id int64) (Place, error) {
 }
 
 func (r *Repository) Upsert(ctx context.Context, c Candidate) (Place, error) {
-	return scan(r.pool.QueryRow(ctx, `INSERT INTO places (provider, provider_place_id, name, address, latitude, longitude, time_zone, refreshed_at)
-		VALUES ('osm',$1,$2,$3,$4,$5,$6,now())
-		ON CONFLICT (provider,provider_place_id) DO UPDATE SET name=EXCLUDED.name,address=EXCLUDED.address,
+	return scan(r.pool.QueryRow(ctx, `INSERT INTO places (provider, provider_place_id, kind, name, address, latitude, longitude, time_zone, refreshed_at)
+		VALUES ('osm',$1,$2,$3,$4,$5,$6,$7,now())
+		ON CONFLICT (provider,provider_place_id) DO UPDATE SET kind=EXCLUDED.kind,name=EXCLUDED.name,address=EXCLUDED.address,
 		latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,time_zone=EXCLUDED.time_zone,
 		refreshed_at=now(),updated_at=now() RETURNING `+placeColumns,
-		c.ProviderPlaceID, c.Name, c.Address, c.Latitude, c.Longitude, c.TimeZone))
+		c.ProviderPlaceID, c.Kind, c.Name, c.Address, c.Latitude, c.Longitude, c.TimeZone))
 }
 
 func (r *Repository) CachedSearch(ctx context.Context, query string) ([]Candidate, bool, error) {

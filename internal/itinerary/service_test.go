@@ -10,10 +10,12 @@ import (
 
 type recordingStore struct {
 	Store
-	called             bool
-	input              Input
-	startDate, endDate time.Time
-	datesErr           error
+	called               bool
+	input                Input
+	startDate, endDate   time.Time
+	datesErr             error
+	tripZone             string
+	listFrom, listBefore *time.Time
 }
 
 type allowAuthorizer struct{}
@@ -31,11 +33,41 @@ func (r *recordingStore) Update(_ context.Context, tripID, id int64, in Input) (
 	return Activity{ID: id, TripID: tripID, Input: in}, nil
 }
 
+func (r *recordingStore) List(_ context.Context, _ int64, _, _ int, from, before *time.Time) ([]Activity, error) {
+	r.called, r.listFrom, r.listBefore = true, from, before
+	return []Activity{}, nil
+}
+
+func TestListDateRange(t *testing.T) {
+	store := &recordingStore{}
+	service := NewService(store, allowAuthorizer{})
+	from := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	before := from.Add(24 * time.Hour)
+	for _, bounds := range [][2]*time.Time{{&from, nil}, {&before, &from}, {&from, &from}} {
+		store.called = false
+		if _, err := service.List(context.Background(), 1, 2, 100, 0, bounds[0], bounds[1]); !errors.Is(err, apperror.ErrInvalid) || store.called {
+			t.Fatalf("invalid range reached repository: %v", err)
+		}
+	}
+	if _, err := service.List(context.Background(), 1, 2, 100, 0, &from, &before); err != nil || !store.called || !store.listFrom.Equal(from) || !store.listBefore.Equal(before) {
+		t.Fatalf("valid range not forwarded: %v", err)
+	}
+}
+
 func (r *recordingStore) TripDates(context.Context, int64) (time.Time, time.Time, error) {
 	if r.startDate.IsZero() {
 		return time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC), r.datesErr
 	}
 	return r.startDate, r.endDate, r.datesErr
+}
+
+func (r *recordingStore) TripWindow(ctx context.Context, id int64) (TripWindow, error) {
+	start, end, err := r.TripDates(ctx, id)
+	zone := r.tripZone
+	if zone == "" {
+		zone = "Asia/Manila"
+	}
+	return TripWindow{StartDate: start, EndDate: end, TimeZone: zone}, err
 }
 
 func TestActivityValidationAndUTC(t *testing.T) {
@@ -49,8 +81,6 @@ func TestActivityValidationAndUTC(t *testing.T) {
 		{"missing start", func(in *Input) { in.StartsAt = time.Time{} }},
 		{"equal times", func(in *Input) { in.EndsAt = in.StartsAt }},
 		{"reversed times", func(in *Input) { in.EndsAt = in.StartsAt.Add(-time.Hour) }},
-		{"invalid zone", func(in *Input) { in.TimeZone = "Unknown/Zone" }},
-		{"machine zone", func(in *Input) { in.TimeZone = "Local" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := valid
@@ -98,7 +128,7 @@ func TestActivityTripBoundaries(t *testing.T) {
 				end, _ := time.Parse(time.RFC3339, tc.end)
 				dateStart, _ := time.Parse(time.DateOnly, tc.dateStart)
 				dateEnd, _ := time.Parse(time.DateOnly, tc.dateEnd)
-				repo := &recordingStore{startDate: dateStart, endDate: dateEnd}
+				repo := &recordingStore{startDate: dateStart, endDate: dateEnd, tripZone: tc.zone}
 				s := NewService(repo, allowAuthorizer{})
 				in := Input{Title: "Activity", StartsAt: start, EndsAt: end, TimeZone: tc.zone}
 				var err error

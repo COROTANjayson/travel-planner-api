@@ -13,7 +13,7 @@ import (
 	"travel-planner/travel-planner-api/internal/apperror"
 )
 
-const sample = `[{"osm_type":"node","osm_id":123,"display_name":"Manila City Hall, Manila, Philippines","lat":"14.5946","lon":"120.9780","namedetails":{"name":"Manila City Hall"}}]`
+const sample = `[{"osm_type":"node","osm_id":123,"addresstype":"city","display_name":"Manila, Philippines","lat":"14.5946","lon":"120.9780","namedetails":{"name":"Manila"}}]`
 
 func TestNominatimResponses(t *testing.T) {
 	for _, tc := range []struct {
@@ -47,13 +47,60 @@ func TestNominatimResponses(t *testing.T) {
 					t.Fatalf("error = %v, want %v", err, tc.want)
 				}
 			}
-			if tc.name == "success" && (len(results) != 1 || results[0].ProviderPlaceID != "N123" || results[0].Name != "Manila City Hall") {
+			if tc.name == "success" && (len(results) != 1 || results[0].ProviderPlaceID != "N123" || results[0].Kind != "city") {
 				t.Fatalf("normalized results: %+v", results)
 			}
 			if tc.name == "empty" && (results == nil || len(results) != 0) {
 				t.Fatalf("empty results: %+v", results)
 			}
 		})
+	}
+}
+
+func TestDestinationSearch(t *testing.T) {
+	store := &memoryStore{places: map[string]Place{}, cache: map[string][]Candidate{}}
+	provider := &fakeProvider{candidate: Candidate{ProviderPlaceID: "N123", Kind: "other", Name: "Hotel", Address: "Manila", Latitude: 14.5946, Longitude: 120.978}}
+	s := NewService(store, provider, func(float64, float64) string { return "Asia/Manila" })
+	results, err := s.Search(context.Background(), 7, "Manila", "destination")
+	if err != nil || len(results) != 0 {
+		t.Fatalf("non-destination leaked: %+v, %v", results, err)
+	}
+	provider.candidate.Kind = "city"
+	results, err = s.Search(context.Background(), 7, "Cebu", "destination")
+	if err != nil || len(results) != 1 || results[0].TimeZone != "Asia/Manila" {
+		t.Fatalf("city search: %+v, %v", results, err)
+	}
+	provider.candidate.Kind = "country"
+	results, err = s.Search(context.Background(), 7, "Philippines", "destination")
+	if err != nil || len(results) != 1 || results[0].Kind != "country" {
+		t.Fatalf("country search: %+v, %v", results, err)
+	}
+	provider.results = []Candidate{provider.candidate, provider.candidate}
+	provider.results[1].ProviderPlaceID = "W456"
+	results, err = s.Search(context.Background(), 7, "duplicate", "destination")
+	if err != nil || len(results) != 1 {
+		t.Fatalf("duplicate destination: %+v, %v", results, err)
+	}
+	if _, err := s.Search(context.Background(), 7, "Cebu", "invalid"); !errors.Is(err, apperror.ErrInvalid) {
+		t.Fatalf("invalid scope: %v", err)
+	}
+}
+
+func TestNominatimDestinationTypes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("featureType") {
+		case "country":
+			_, _ = w.Write([]byte(`[{"osm_type":"relation","osm_id":1,"addresstype":"country","display_name":"Philippines","lat":"12","lon":"122"}]`))
+		case "settlement":
+			_, _ = w.Write([]byte(`[{"osm_type":"node","osm_id":2,"addresstype":"town","display_name":"Cebu, Philippines","lat":"10","lon":"123"},{"osm_type":"node","osm_id":3,"addresstype":"hotel","display_name":"Hotel","lat":"10","lon":"123"}]`))
+		default:
+			t.Error("destination search used an unrelated provider filter")
+		}
+	}))
+	defer server.Close()
+	items, err := NewNominatim(server.URL, &http.Client{Timeout: time.Second}).SearchDestinations(context.Background(), "Philippines")
+	if err != nil || len(items) != 3 || items[0].Kind != "country" || items[1].Kind != "city" || items[2].Kind != "other" {
+		t.Fatalf("destination types: %+v, %v", items, err)
 	}
 }
 
@@ -93,11 +140,18 @@ func (m *memoryStore) CacheSearch(_ context.Context, key string, items []Candida
 type fakeProvider struct {
 	searches, lookups int
 	candidate         Candidate
+	results           []Candidate
 }
 
 func (f *fakeProvider) Search(context.Context, string) ([]Candidate, error) {
 	f.searches++
+	if f.results != nil {
+		return f.results, nil
+	}
 	return []Candidate{f.candidate}, nil
+}
+func (f *fakeProvider) SearchDestinations(ctx context.Context, query string) ([]Candidate, error) {
+	return f.Search(ctx, query)
 }
 func (f *fakeProvider) Lookup(context.Context, string) (Candidate, error) {
 	f.lookups++

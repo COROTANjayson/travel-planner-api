@@ -16,7 +16,7 @@ func Register(r chi.Router, s *Service) {
 				httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 				return
 			}
-			results, err := s.Search(r.Context(), user.ID, r.URL.Query().Get("q"))
+			results, err := s.Search(r.Context(), user.ID, r.URL.Query().Get("q"), r.URL.Query().Get("scope"))
 			if err != nil {
 				httpx.Error(w, err)
 				return

@@ -125,7 +125,10 @@ func TestAPILifecycle(t *testing.T) {
 		})
 	}
 
-	input := trips.Input{Name: "Cebu integration trip", Destination: "Cebu", StartDate: "2026-10-01", EndDate: "2026-10-03", TimeZone: "Asia/Manila"}
+	placeID := destinationFixture(t, ctx, pool, url)
+	tripStart := time.Date(2026, 9, 30, 16, 0, 0, 0, time.UTC)
+	tripEnd := time.Date(2026, 10, 3, 15, 59, 59, 0, time.UTC)
+	input := trips.Input{Name: "Cebu integration trip", DestinationPlaceID: &placeID, StartsAt: &tripStart, EndsAt: &tripEnd}
 	var trip trips.Trip
 	request("POST", "/api/v1/trips", input, 201, &trip)
 	cleanup(trip.ID)
@@ -134,9 +137,13 @@ func TestAPILifecycle(t *testing.T) {
 		t.Fatalf("trip owner = %d, want %d: %v", storedOwnerID, ownerID, err)
 	}
 	request("POST", "/api/v1/trips", map[string]any{"owner_user_id": otherID}, 400, nil)
+	missingPlace := int64(9223372036854775807)
+	badInput := input
+	badInput.DestinationPlaceID = &missingPlace
+	request("POST", "/api/v1/trips", badInput, 400, nil)
 	base := fmt.Sprintf("/api/v1/trips/%d", trip.ID)
 	request("GET", base, nil, 200, &trip)
-	if trip.StartDate != input.StartDate || trip.TimeZone != input.TimeZone {
+	if trip.StartDate != "2026-10-01" || trip.TimeZone != "Asia/Manila" || trip.Destination != "Cebu" {
 		t.Fatal("trip fields did not round-trip")
 	}
 	var tripList []trips.Trip
@@ -169,6 +176,22 @@ func TestAPILifecycle(t *testing.T) {
 	if activity.Title != activityInput.Title {
 		t.Fatal("activity update not persisted")
 	}
+	dateOnly := trips.Input{Name: input.Name, DestinationPlaceID: &placeID, StartDate: "2026-10-01", EndDate: "2026-10-03"}
+	var dateTrip trips.Trip
+	request("POST", "/api/v1/trips", dateOnly, 201, &dateTrip)
+	cleanup(dateTrip.ID)
+	request("GET", fmt.Sprintf("/api/v1/trips/%d", dateTrip.ID), nil, 200, &dateTrip)
+	if dateTrip.StartsAt != nil || dateTrip.EndsAt != nil || dateTrip.StartDate != dateOnly.StartDate {
+		t.Fatal("date-only create did not round-trip")
+	}
+	request("DELETE", fmt.Sprintf("/api/v1/trips/%d", dateTrip.ID), nil, 204, nil)
+	request("PUT", base, dateOnly, 200, &trip)
+	if trip.StartsAt != nil || trip.EndsAt != nil {
+		t.Fatal("removing exact times failed")
+	}
+	dateOnly.StartDate = "2026-10-02"
+	request("PUT", base, dateOnly, 409, nil)
+	request("PUT", base, input, 200, &trip)
 
 	var other trips.Trip
 	requestAs(otherID, "POST", "/api/v1/trips", input, 201, &other)

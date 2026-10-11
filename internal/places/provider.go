@@ -22,6 +22,7 @@ var referencePattern = regexp.MustCompile(`^[NWR][1-9][0-9]*$`)
 
 type Provider interface {
 	Search(context.Context, string) ([]Candidate, error)
+	SearchDestinations(context.Context, string) ([]Candidate, error)
 	Lookup(context.Context, string) (Candidate, error)
 }
 
@@ -39,6 +40,7 @@ func NewNominatim(endpoint string, client *http.Client) *Nominatim {
 type nominatimResult struct {
 	OSMType     string `json:"osm_type"`
 	OSMID       int64  `json:"osm_id"`
+	AddressType string `json:"addresstype"`
 	DisplayName string `json:"display_name"`
 	Lat         string `json:"lat"`
 	Lon         string `json:"lon"`
@@ -107,7 +109,14 @@ func (n *Nominatim) fetch(ctx context.Context, path string, values url.Values) (
 		if latErr != nil || lonErr != nil || !validCoordinates(lat, lon) || name == "" || address == "" || len(name) > 300 || len(address) > 2000 {
 			return nil, apperror.ErrUnavailable
 		}
-		results = append(results, Candidate{ProviderPlaceID: kind[:1] + strconv.FormatInt(item.OSMID, 10), Name: name, Address: address, Latitude: lat, Longitude: lon})
+		placeKind := "other"
+		switch item.AddressType {
+		case "country":
+			placeKind = "country"
+		case "city", "town", "village", "municipality":
+			placeKind = "city"
+		}
+		results = append(results, Candidate{ProviderPlaceID: kind[:1] + strconv.FormatInt(item.OSMID, 10), Kind: placeKind, Name: name, Address: address, Latitude: lat, Longitude: lon})
 	}
 	return results, nil
 }
@@ -118,6 +127,21 @@ func validCoordinates(lat, lon float64) bool {
 
 func (n *Nominatim) Search(ctx context.Context, query string) ([]Candidate, error) {
 	return n.fetch(ctx, "/search", url.Values{"q": {query}, "format": {"jsonv2"}, "limit": {"10"}, "namedetails": {"1"}})
+}
+
+func (n *Nominatim) SearchDestinations(ctx context.Context, query string) ([]Candidate, error) {
+	params := url.Values{"q": {query}, "format": {"jsonv2"}, "limit": {"10"}, "namedetails": {"1"}, "featureType": {"country"}}
+	countries, err := n.fetch(ctx, "/search", params)
+	if err != nil {
+		return nil, err
+	}
+	params.Set("featureType", "settlement")
+	params.Set("limit", "40")
+	settlements, err := n.fetch(ctx, "/search", params)
+	if err != nil {
+		return nil, err
+	}
+	return append(countries, settlements...), nil
 }
 
 func (n *Nominatim) Lookup(ctx context.Context, ref string) (Candidate, error) {

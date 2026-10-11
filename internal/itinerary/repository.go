@@ -19,7 +19,7 @@ func NewRepository(pool *pgxpool.Pool) *Repository { return &Repository{pool: po
 const columns = `i.id, i.trip_id, i.created_by_user_id, i.title, i.starts_at, i.ends_at, i.time_zone, i.notes,
 	i.place_id, i.created_at, i.updated_at, CASE WHEN p.id IS NULL THEN NULL ELSE jsonb_build_object(
 	'id',p.id,'provider',p.provider,'provider_place_id',p.provider_place_id,'name',p.name,'address',p.address,
-	'latitude',p.latitude,'longitude',p.longitude,'time_zone',p.time_zone,'refreshed_at',p.refreshed_at,
+	'latitude',p.latitude,'longitude',p.longitude,'time_zone',p.time_zone,'kind',p.kind,'refreshed_at',p.refreshed_at,
 	'created_at',p.created_at,'updated_at',p.updated_at) END`
 
 func scan(row pgx.Row) (Activity, error) {
@@ -49,18 +49,85 @@ func scan(row pgx.Row) (Activity, error) {
 	return a, err
 }
 func (r *Repository) Create(ctx context.Context, userID, tripID int64, in Input) (Activity, error) {
-	return scan(r.pool.QueryRow(ctx, `WITH saved AS (INSERT INTO itinerary_items (created_by_user_id,trip_id,title,starts_at,ends_at,time_zone,notes,place_id)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return Activity{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err := checkWindowLocked(ctx, tx, tripID, in); err != nil {
+		return Activity{}, err
+	}
+	a, err := scan(tx.QueryRow(ctx, `WITH saved AS (INSERT INTO itinerary_items (created_by_user_id,trip_id,title,starts_at,ends_at,time_zone,notes,place_id)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *) SELECT `+columns+` FROM saved i LEFT JOIN places p ON p.id=i.place_id`,
 		userID, tripID, in.Title, in.StartsAt, in.EndsAt, in.TimeZone, in.Notes, in.PlaceID))
+	if err != nil {
+		return Activity{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Activity{}, err
+	}
+	return a, nil
 }
 
-func (r *Repository) TripDates(ctx context.Context, tripID int64) (time.Time, time.Time, error) {
-	var start, end time.Time
-	err := r.pool.QueryRow(ctx, "SELECT start_date,end_date FROM trips WHERE id=$1", tripID).Scan(&start, &end)
+func (r *Repository) TripWindow(ctx context.Context, tripID int64) (TripWindow, error) {
+	var w TripWindow
+	err := r.pool.QueryRow(ctx, "SELECT start_date,end_date,starts_at,ends_at,time_zone FROM trips WHERE id=$1", tripID).Scan(&w.StartDate, &w.EndDate, &w.StartsAt, &w.EndsAt, &w.TimeZone)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = apperror.ErrNotFound
 	}
-	return start, end, err
+	return w, err
+}
+
+func checkWindowLocked(ctx context.Context, tx pgx.Tx, tripID int64, in Input) error {
+	var w TripWindow
+	err := tx.QueryRow(ctx, "SELECT start_date,end_date,starts_at,ends_at,time_zone FROM trips WHERE id=$1 FOR UPDATE", tripID).Scan(&w.StartDate, &w.EndDate, &w.StartsAt, &w.EndsAt, &w.TimeZone)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return apperror.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if w.StartsAt != nil {
+		if in.StartsAt.Before(*w.StartsAt) || in.EndsAt.After(*w.EndsAt) {
+			return apperror.ErrInvalid
+		}
+	} else {
+		zone, err := time.LoadLocation(w.TimeZone)
+		if err != nil {
+			return err
+		}
+		for _, instant := range []time.Time{in.StartsAt, in.EndsAt} {
+			y, m, d := instant.In(zone).Date()
+			date := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+			if date.Before(w.StartDate) || date.After(w.EndDate) {
+				return apperror.ErrInvalid
+			}
+		}
+	}
+	if in.TimeZone != w.TimeZone {
+		return apperror.ErrInvalid
+	}
+	return nil
+}
+
+func (r *Repository) Overlaps(ctx context.Context, tripID int64, start, end time.Time, excludeID int64) ([]Activity, error) {
+	rows, err := r.pool.Query(ctx, "SELECT "+columns+" FROM itinerary_items i LEFT JOIN places p ON p.id=i.place_id WHERE i.trip_id=$1 AND i.id<>$4 AND i.starts_at<$3 AND i.ends_at>$2 ORDER BY i.starts_at,i.id LIMIT 11", tripID, start, end, excludeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]Activity, 0)
+	for rows.Next() {
+		a, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, a)
+	}
+	if len(items) > 10 {
+		items = items[:10]
+	}
+	return items, rows.Err()
 }
 
 func (r *Repository) Conflicts(ctx context.Context, tripID int64, limit, offset int) ([]Conflict, error) {
@@ -87,7 +154,7 @@ func (r *Repository) Conflicts(ctx context.Context, tripID int64, limit, offset 
 func (r *Repository) Get(ctx context.Context, tripID, id int64) (Activity, error) {
 	return scan(r.pool.QueryRow(ctx, "SELECT "+columns+" FROM itinerary_items i LEFT JOIN places p ON p.id=i.place_id WHERE i.trip_id=$1 AND i.id=$2", tripID, id))
 }
-func (r *Repository) List(ctx context.Context, tripID int64, limit, offset int) ([]Activity, error) {
+func (r *Repository) List(ctx context.Context, tripID int64, limit, offset int, from, before *time.Time) ([]Activity, error) {
 	var exists bool
 	if err := r.pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM trips WHERE id=$1)", tripID).Scan(&exists); err != nil {
 		return nil, err
@@ -95,7 +162,7 @@ func (r *Repository) List(ctx context.Context, tripID int64, limit, offset int) 
 	if !exists {
 		return nil, apperror.ErrNotFound
 	}
-	rows, err := r.pool.Query(ctx, "SELECT "+columns+" FROM itinerary_items i LEFT JOIN places p ON p.id=i.place_id WHERE i.trip_id=$1 ORDER BY i.starts_at,i.id LIMIT $2 OFFSET $3", tripID, limit, offset)
+	rows, err := r.pool.Query(ctx, "SELECT "+columns+" FROM itinerary_items i LEFT JOIN places p ON p.id=i.place_id WHERE i.trip_id=$1 AND ($4::timestamptz IS NULL OR i.starts_at >= $4) AND ($5::timestamptz IS NULL OR i.starts_at < $5) ORDER BY i.starts_at,i.id LIMIT $2 OFFSET $3", tripID, limit, offset, from, before)
 	if err != nil {
 		return nil, err
 	}
@@ -111,9 +178,24 @@ func (r *Repository) List(ctx context.Context, tripID int64, limit, offset int) 
 	return result, rows.Err()
 }
 func (r *Repository) Update(ctx context.Context, tripID, id int64, in Input) (Activity, error) {
-	return scan(r.pool.QueryRow(ctx, `WITH saved AS (UPDATE itinerary_items SET title=$3, starts_at=$4, ends_at=$5, time_zone=$6,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return Activity{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err := checkWindowLocked(ctx, tx, tripID, in); err != nil {
+		return Activity{}, err
+	}
+	a, err := scan(tx.QueryRow(ctx, `WITH saved AS (UPDATE itinerary_items SET title=$3, starts_at=$4, ends_at=$5, time_zone=$6,
 		notes=$7,place_id=$8,updated_at=now() WHERE trip_id=$1 AND id=$2 RETURNING *)
 		SELECT `+columns+` FROM saved i LEFT JOIN places p ON p.id=i.place_id`, tripID, id, in.Title, in.StartsAt, in.EndsAt, in.TimeZone, in.Notes, in.PlaceID))
+	if err != nil {
+		return Activity{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Activity{}, err
+	}
+	return a, nil
 }
 func (r *Repository) Delete(ctx context.Context, tripID, id int64) error {
 	tag, err := r.pool.Exec(ctx, "DELETE FROM itinerary_items WHERE trip_id=$1 AND id=$2", tripID, id)

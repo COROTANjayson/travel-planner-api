@@ -36,10 +36,14 @@ func NewService(store Store, provider Provider, zone func(float64, float64) stri
 	return &Service{store: store, provider: provider, zone: zone, users: make(map[int64]userWindow)}
 }
 
-func (s *Service) Search(ctx context.Context, userID int64, query string) ([]Candidate, error) {
+func (s *Service) Search(ctx context.Context, userID int64, query string, scope ...string) ([]Candidate, error) {
 	query = strings.TrimSpace(query)
 	if len(query) < 2 || len(query) > 200 {
 		return nil, fmt.Errorf("%w: q must be 2–200 bytes", apperror.ErrInvalid)
+	}
+	destination := len(scope) > 0 && scope[0] == "destination"
+	if len(scope) > 0 && scope[0] != "" && !destination {
+		return nil, fmt.Errorf("%w: unknown place scope", apperror.ErrInvalid)
 	}
 	s.mu.Lock()
 	window := s.users[userID]
@@ -54,24 +58,47 @@ func (s *Service) Search(ctx context.Context, userID int64, query string) ([]Can
 	s.users[userID] = window
 	s.mu.Unlock()
 	key := strings.ToLower(query)
+	if destination {
+		key = "destination:" + key
+	}
 	if cached, found, err := s.store.CachedSearch(ctx, key); err != nil {
 		return nil, err
 	} else if found {
 		return cached, nil
 	}
-	results, err := s.provider.Search(ctx, query)
+	var results []Candidate
+	var err error
+	if destination {
+		results, err = s.provider.SearchDestinations(ctx, query)
+	} else {
+		results, err = s.provider.Search(ctx, query)
+	}
 	if err != nil {
 		return nil, err
 	}
-	for i := range results {
-		if err := s.complete(&results[i]); err != nil {
+	filtered := make([]Candidate, 0, min(len(results), 10))
+	seen := make(map[string]bool)
+	for _, candidate := range results {
+		if destination && candidate.Kind != "city" && candidate.Kind != "country" {
+			continue
+		}
+		if err := s.complete(&candidate); err != nil {
 			return nil, err
 		}
+		identity := strings.ToLower(candidate.Name + "\x00" + candidate.Address)
+		if destination && seen[identity] {
+			continue
+		}
+		seen[identity] = true
+		filtered = append(filtered, candidate)
+		if len(filtered) == 10 {
+			break
+		}
 	}
-	if err := s.store.CacheSearch(ctx, key, results); err != nil {
+	if err := s.store.CacheSearch(ctx, key, filtered); err != nil {
 		return nil, err
 	}
-	return results, nil
+	return filtered, nil
 }
 
 func (s *Service) complete(c *Candidate) error {

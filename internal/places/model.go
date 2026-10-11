@@ -4,6 +4,7 @@ import "time"
 
 type Candidate struct {
 	ProviderPlaceID string  `json:"provider_place_id"`
+	Kind            string  `json:"kind"`
 	Name            string  `json:"name"`
 	Address         string  `json:"address"`
 	Latitude        float64 `json:"latitude"`

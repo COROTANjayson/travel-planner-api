@@ -11,6 +11,7 @@ import (
 )
 
 type Store interface {
+	Destination(context.Context, int64) (Destination, error)
 	Create(context.Context, int64, Input) (Trip, error)
 	List(context.Context, int64, int, int) ([]Trip, error)
 	Get(context.Context, int64) (Trip, error)
@@ -31,29 +32,49 @@ type Service struct {
 
 func NewService(store Store, authz Authorizer) *Service { return &Service{store: store, authz: authz} }
 
-func validate(in Input) (Input, error) {
+func (s *Service) validate(ctx context.Context, in Input) (Input, error) {
 	in.Name = strings.TrimSpace(in.Name)
-	in.Destination = strings.TrimSpace(in.Destination)
-	in.TimeZone = strings.TrimSpace(in.TimeZone)
-	if in.Name == "" || len(in.Name) > 200 || in.Destination == "" || len(in.Destination) > 300 {
-		return in, fmt.Errorf("%w: name (up to 200 bytes) and destination (up to 300 bytes) are required", apperror.ErrInvalid)
+	if in.Name == "" || len(in.Name) > 200 || in.DestinationPlaceID == nil || *in.DestinationPlaceID <= 0 {
+		return in, fmt.Errorf("%w: name and destination_place_id are required", apperror.ErrInvalid)
 	}
-	start, e1 := time.Parse(time.DateOnly, in.StartDate)
-	end, e2 := time.Parse(time.DateOnly, in.EndDate)
-	if e1 != nil || e2 != nil || start.Year() < 1 || end.Year() < 1 || end.Before(start) {
-		return in, fmt.Errorf("%w: dates must use YYYY-MM-DD and end_date must be on or after start_date", apperror.ErrInvalid)
+	if (in.StartsAt == nil) != (in.EndsAt == nil) {
+		return in, fmt.Errorf("%w: provide both exact times or leave both unset", apperror.ErrInvalid)
 	}
-	if in.TimeZone == "" || in.TimeZone == "Local" {
-		return in, fmt.Errorf("%w: time_zone must be an explicit IANA time zone", apperror.ErrInvalid)
+	if in.StartsAt != nil && (in.StartsAt.IsZero() || !in.EndsAt.After(*in.StartsAt) ||
+		in.StartsAt.UTC().Year() < 1 || in.EndsAt.UTC().Year() > 9999) {
+		return in, fmt.Errorf("%w: starts_at and ends_at must be ordered RFC3339 timestamps", apperror.ErrInvalid)
 	}
-	if _, err := time.LoadLocation(in.TimeZone); err != nil {
-		return in, fmt.Errorf("%w: unknown time_zone", apperror.ErrInvalid)
+	place, err := s.store.Destination(ctx, *in.DestinationPlaceID)
+	if err != nil {
+		return in, err
+	}
+	if (place.Kind != "city" && place.Kind != "country") || place.Name == "" || len(place.Name) > 300 {
+		return in, fmt.Errorf("%w: destination must be a city or country", apperror.ErrInvalid)
+	}
+	zone, err := time.LoadLocation(place.TimeZone)
+	if err != nil || place.TimeZone == "Local" {
+		return in, fmt.Errorf("%w: invalid destination time zone", apperror.ErrInvalid)
+	}
+	in.Destination, in.TimeZone = place.Name, place.TimeZone
+	if in.StartsAt != nil {
+		start, end := in.StartsAt.UTC(), in.EndsAt.UTC()
+		startDate, endDate := start.In(zone).Format(time.DateOnly), end.In(zone).Format(time.DateOnly)
+		if (in.StartDate != "" && in.StartDate != startDate) || (in.EndDate != "" && in.EndDate != endDate) {
+			return in, fmt.Errorf("%w: exact times must match the selected trip dates", apperror.ErrInvalid)
+		}
+		in.StartsAt, in.EndsAt = &start, &end
+		in.StartDate, in.EndDate = startDate, endDate
+	}
+	startDate, startErr := time.Parse(time.DateOnly, in.StartDate)
+	endDate, endErr := time.Parse(time.DateOnly, in.EndDate)
+	if startErr != nil || endErr != nil || startDate.Year() < 1 || endDate.Year() > 9999 || startDate.After(endDate) {
+		return in, fmt.Errorf("%w: invalid trip dates", apperror.ErrInvalid)
 	}
 	return in, nil
 }
 
 func (s *Service) Create(ctx context.Context, ownerUserID int64, in Input) (Trip, error) {
-	in, err := validate(in)
+	in, err := s.validate(ctx, in)
 	if err != nil {
 		return Trip{}, err
 	}
@@ -72,7 +93,7 @@ func (s *Service) Update(ctx context.Context, ownerUserID, id int64, in Input) (
 	if err := s.authz.RequireEditor(ctx, ownerUserID, id); err != nil {
 		return Trip{}, err
 	}
-	in, err := validate(in)
+	in, err := s.validate(ctx, in)
 	if err != nil {
 		return Trip{}, err
 	}

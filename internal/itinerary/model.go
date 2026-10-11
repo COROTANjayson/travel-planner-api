@@ -29,3 +29,9 @@ type Conflict struct {
 	OverlapStartsAt time.Time `json:"overlap_starts_at"`
 	OverlapEndsAt   time.Time `json:"overlap_ends_at"`
 }
+
+type TripWindow struct {
+	StartDate, EndDate time.Time
+	StartsAt, EndsAt   *time.Time
+	TimeZone           string
+}

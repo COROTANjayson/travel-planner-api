@@ -3,8 +3,11 @@ package itinerary
 import (
 	"fmt"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"travel-planner/travel-planner-api/internal/apperror"
 	"travel-planner/travel-planner-api/internal/auth"
 	"travel-planner/travel-planner-api/internal/httpx"
 )
@@ -20,6 +23,33 @@ func currentUserID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 
 func Register(r chi.Router, s *Service) {
 	r.Route("/trips/{tripID}/activities", func(r chi.Router) {
+		r.Get("/overlaps", func(w http.ResponseWriter, r *http.Request) {
+			userID, ok := currentUserID(w, r)
+			if !ok {
+				return
+			}
+			tripID, err := httpx.ID(r, "tripID")
+			if err != nil {
+				httpx.Error(w, err)
+				return
+			}
+			start, e1 := time.Parse(time.RFC3339Nano, r.URL.Query().Get("starts_at"))
+			end, e2 := time.Parse(time.RFC3339Nano, r.URL.Query().Get("ends_at"))
+			excludeID := int64(0)
+			if value := r.URL.Query().Get("exclude_id"); value != "" {
+				excludeID, err = strconv.ParseInt(value, 10, 64)
+			}
+			if e1 != nil || e2 != nil || err != nil || excludeID < 0 {
+				httpx.Error(w, fmt.Errorf("invalid overlap query: %w", apperror.ErrInvalid))
+				return
+			}
+			items, err := s.Overlaps(r.Context(), userID, tripID, start, end, excludeID)
+			if err != nil {
+				httpx.Error(w, err)
+				return
+			}
+			httpx.JSON(w, http.StatusOK, items)
+		})
 		r.Post("/", func(w http.ResponseWriter, r *http.Request) {
 			userID, ok := currentUserID(w, r)
 			if !ok {
@@ -58,7 +88,18 @@ func Register(r chi.Router, s *Service) {
 				httpx.Error(w, err)
 				return
 			}
-			items, err := s.List(r.Context(), userID, tripID, limit, offset)
+			var from, before *time.Time
+			fromText, beforeText := r.URL.Query().Get("start_from"), r.URL.Query().Get("start_before")
+			if fromText != "" || beforeText != "" {
+				start, e1 := time.Parse(time.RFC3339Nano, fromText)
+				end, e2 := time.Parse(time.RFC3339Nano, beforeText)
+				if e1 != nil || e2 != nil {
+					httpx.Error(w, fmt.Errorf("%w: invalid activity date range", apperror.ErrInvalid))
+					return
+				}
+				from, before = &start, &end
+			}
+			items, err := s.List(r.Context(), userID, tripID, limit, offset, from, before)
 			if err != nil {
 				httpx.Error(w, err)
 				return

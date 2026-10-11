@@ -12,9 +12,10 @@ import (
 
 type Store interface {
 	Create(context.Context, int64, int64, Input) (Activity, error)
-	TripDates(context.Context, int64) (time.Time, time.Time, error)
+	TripWindow(context.Context, int64) (TripWindow, error)
+	Overlaps(context.Context, int64, time.Time, time.Time, int64) ([]Activity, error)
 	Conflicts(context.Context, int64, int, int) ([]Conflict, error)
-	List(context.Context, int64, int, int) ([]Activity, error)
+	List(context.Context, int64, int, int, *time.Time, *time.Time) ([]Activity, error)
 	Get(context.Context, int64, int64) (Activity, error)
 	Update(context.Context, int64, int64, Input) (Activity, error)
 	Delete(context.Context, int64, int64) error
@@ -44,9 +45,6 @@ func validate(in Input) (Input, error) {
 		in.EndsAt.UTC().Year() < 1 || in.EndsAt.UTC().Year() > 9999 {
 		return in, fmt.Errorf("%w: starts_at and ends_at must be RFC3339 timestamps with ends_at after starts_at", apperror.ErrInvalid)
 	}
-	if in.TimeZone == "" || in.TimeZone == "Local" {
-		return in, fmt.Errorf("%w: time_zone must be an explicit IANA time zone", apperror.ErrInvalid)
-	}
 	in.StartsAt, in.EndsAt = in.StartsAt.UTC(), in.EndsAt.UTC()
 	return in, nil
 }
@@ -55,22 +53,39 @@ func (s *Service) validateForTrip(ctx context.Context, tripID int64, in Input) (
 	if err != nil {
 		return in, err
 	}
-	zone, err := time.LoadLocation(in.TimeZone)
+	window, err := s.store.TripWindow(ctx, tripID)
+	if err != nil {
+		return in, err
+	}
+	in.TimeZone = window.TimeZone
+	zone, err := time.LoadLocation(window.TimeZone)
 	if err != nil {
 		return in, fmt.Errorf("%w: unknown time_zone", apperror.ErrInvalid)
 	}
-	startDate, endDate, err := s.store.TripDates(ctx, tripID)
-	if err != nil {
-		return in, err
+	if window.StartsAt != nil {
+		if in.StartsAt.Before(*window.StartsAt) || in.EndsAt.After(*window.EndsAt) {
+			return in, fmt.Errorf("%w: activity times must fall within trip times", apperror.ErrInvalid)
+		}
+		return in, nil
 	}
 	for _, instant := range []time.Time{in.StartsAt, in.EndsAt} {
 		year, month, day := instant.In(zone).Date()
 		date := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
-		if date.Before(startDate) || date.After(endDate) {
+		if date.Before(window.StartDate) || date.After(window.EndDate) {
 			return in, fmt.Errorf("%w: activity local dates must fall within trip dates", apperror.ErrInvalid)
 		}
 	}
 	return in, nil
+}
+
+func (s *Service) Overlaps(ctx context.Context, userID, tripID int64, start, end time.Time, excludeID int64) ([]Activity, error) {
+	if err := s.authz.RequireParticipant(ctx, userID, tripID); err != nil {
+		return nil, err
+	}
+	if start.IsZero() || !end.After(start) || excludeID < 0 {
+		return nil, fmt.Errorf("%w: invalid overlap interval", apperror.ErrInvalid)
+	}
+	return s.store.Overlaps(ctx, tripID, start.UTC(), end.UTC(), excludeID)
 }
 
 func (s *Service) Create(ctx context.Context, userID, tripID int64, in Input) (Activity, error) {
@@ -83,11 +98,14 @@ func (s *Service) Create(ctx context.Context, userID, tripID int64, in Input) (A
 	}
 	return s.store.Create(ctx, userID, tripID, in)
 }
-func (s *Service) List(ctx context.Context, userID, tripID int64, limit, offset int) ([]Activity, error) {
+func (s *Service) List(ctx context.Context, userID, tripID int64, limit, offset int, from, before *time.Time) ([]Activity, error) {
 	if err := s.authz.RequireParticipant(ctx, userID, tripID); err != nil {
 		return nil, err
 	}
-	return s.store.List(ctx, tripID, limit, offset)
+	if (from == nil) != (before == nil) || (from != nil && !before.After(*from)) {
+		return nil, fmt.Errorf("%w: start_from and start_before must be an ordered pair", apperror.ErrInvalid)
+	}
+	return s.store.List(ctx, tripID, limit, offset, from, before)
 }
 func (s *Service) Get(ctx context.Context, userID, tripID, id int64) (Activity, error) {
 	if err := s.authz.RequireParticipant(ctx, userID, tripID); err != nil {
