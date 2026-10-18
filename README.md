@@ -1,213 +1,200 @@
 # Travel Planner API
 
-A local Go REST API using Chi, pgx, PostgreSQL, and Goose. The API is its own Go module inside the overall travel planner project.
+Independent Go API using Chi, pgx, PostgreSQL, Goose, and Auth0. No web checkout
+is required to build or test it. Current contracts and domain rules are in the
+[backend guide](docs/backend/README.md); provider rules are in the
+[places guide](docs/backend/06-places-and-maps.md).
 
-## Run locally (Git Bash on Windows)
+## Run locally
 
-Run this from `travel-planner-api/`. Go and Goose must be on your `PATH`:
-
-```console
-./scripts/run.sh
-```
-
-The script starts the project PostgreSQL instance on `127.0.0.1:55432`, applies migrations, and runs the API. Its data lives in ignored `.local/postgres/`; connection settings live in ignored `.env`.
-
-If you prefer another existing PostgreSQL instance, create a development database and a separate database ending in `_test`, then configure their connection URLs in `.env`. Skip the `pg_ctl` commands for the project instance in that case.
-
-The API automatically reads `.env` from the current working directory using [godotenv](https://github.com/joho/godotenv). Run it from `travel-planner-api/`. Existing shell environment variables take precedence; a missing `.env` is allowed when the required settings are supplied by the environment. Invalid `.env` syntax fails startup without printing file contents.
-
-Once the database is running and migrations are applied, starting the API needs only:
+Use the Go version declared in `go.mod`, PostgreSQL 18, and Goose **v3.28.0**.
+Install the migration CLI if needed:
 
 ```bash
-go run ./cmd/api
+go install github.com/pressly/goose/v3/cmd/goose@v3.28.0
+go mod download
 ```
 
-The `source .env` commands in this README are still needed for Goose and integration tests, which read their connection settings from the shell.
+The existing local database launchers target **Git Bash on Windows** and call
+PowerShell with PostgreSQL tools at `C:\Program Files\PostgreSQL\18\bin`.
+If PostgreSQL is elsewhere, update that explicit path in `scripts/local-db.ps1`.
+Run all commands from this repository's root. On PowerShell, use the installed
+Git Bash explicitly if `bash` resolves to WSL.
+
+For a fresh checkout with neither `.env` nor a project database:
+
+```bash
+bash scripts/local-db.sh setup
+```
+
+This initializes ignored `.local/postgres/`, creates development and `_test`
+databases on `127.0.0.1:55432`, and saves generated local connection settings in
+ignored `.env`. It refuses to overwrite an existing `.env` or silently recreate
+an initialized database. Add `AUTH0_ISSUER_URL` and `AUTH0_AUDIENCE` in your editor.
+Do not copy `.env.example` over the generated connection settings.
+
+Alternatively, use your own PostgreSQL instance: create separate development
+and `_test` databases, copy [.env.example](.env.example) to `.env` only when none
+exists, and edit the placeholders. Apply development migrations explicitly and
+run `go run ./cmd/api`; do not use the project database launcher for that instance.
+
+Create an Auth0 API using RS256. Configure its issuer and audience, then start
+the project-managed instance, apply development migrations, and run the API:
+
+```bash
+bash scripts/run.sh
+```
+
+The script sources the local `.env` for Goose; treat that file as trusted local
+shell configuration. The API itself reads dotenv without executing shell code.
+Existing process environment variables take precedence in the API. Missing
+`.env` is allowed when required settings are exported; invalid syntax fails
+without printing its contents.
 
 | Setting | Behavior |
 | --- | --- |
-| `PORT` | Defaults to `8080`; accepts integers from 1 to 65535. |
-| `DATABASE_URL` | Required PostgreSQL connection URL. Startup checks the connection and fails with a clear error if it cannot connect. |
-| `AUTH0_ISSUER_URL` | Required Auth0 issuer URL, including `https://` and the trailing slash. |
-| `AUTH0_AUDIENCE` | Required Auth0 API identifier expected in access tokens. |
-| `TEST_DATABASE_URL` | Used only by integration tests; the database name must end in `_test`. |
+| `PORT` | Defaults to 8080; integer from 1 to 65535 |
+| `DATABASE_URL` | Required PostgreSQL URL; checked at startup |
+| `AUTH0_ISSUER_URL` | Required HTTPS tenant URL with trailing slash |
+| `AUTH0_AUDIENCE` | Required Auth0 API identifier; must match client audience |
+| `TEST_DATABASE_URL` | Integration tests only; database name must end in `_test` |
 
-Create an Auth0 API using RS256. Set `AUTH0_ISSUER_URL` to its tenant domain with a trailing slash and `AUTH0_AUDIENCE` to its API Identifier. Auth0 handles signup and login; the API creates a local user on the first authenticated request.
-
-The API listens on `127.0.0.1`. Auth0 protects `/api/v1`; `/health` remains public. Each trip has one owner and may have editor, member, or viewer participants. Trip-scoped endpoints hide trips from nonparticipants with HTTP 404.
-
-In another Git Bash terminal:
+The API binds to `127.0.0.1`. `/health` is public liveness; `/api/v1` requires
+bearer access tokens. Auth0 handles signup/login; the API provisions local users.
+No Auth0 client secret is required by this API.
 
 ```bash
 curl --fail --show-error http://127.0.0.1:8080/health
+# Expected: {"status":"ok"}
+bash scripts/local-db.sh status
+bash scripts/local-db.sh stop
 ```
 
-Expected response: `{"status":"ok"}`. This endpoint reports HTTP server liveness; database connectivity is checked at startup.
+Ctrl+C gracefully stops the API with up to ten seconds for active requests.
+Stopping the database preserves its files and does not affect a service on 5432.
 
-Stop a foreground API with Ctrl+C. It allows up to ten seconds for active requests to finish, then closes its PostgreSQL pool. To manage the project database:
+## Architecture
+
+Requests follow `router -> handler -> service -> repository -> PostgreSQL`.
+Feature services own validation and use small repository/authorizer interfaces;
+repositories own SQL. Keep responsibilities separate where they exist without
+adding empty files or abstractions just to match a template.
+
+| Location | Responsibility |
+| --- | --- |
+| `cmd/api` | Configuration, dependency wiring, startup, shutdown |
+| `internal/auth` | Auth0 verification, local user provisioning, identity context |
+| `internal/trips`, `memberships`, `itinerary`, `places` | Feature models, handlers, services, repositories, tests |
+| `internal/httpx`, `apperror` | Strict JSON/ID/pagination helpers and safe error mapping |
+| `internal/config`, `database`, `server` | Shared runtime infrastructure |
+| `migrations` | Ordered Goose SQL migrations |
+| `integration` | HTTP-to-PostgreSQL tests with fixture cleanup |
+| `docs/backend` | Current domain/provider guidance |
+| `docs/agents` | Issue tracker, triage labels, and domain-doc conventions |
+
+Register routes in `internal/server` and wire dependencies in `cmd/api`.
+Reuse shared helpers before introducing another; durable invariants belong in
+PostgreSQL constraints and transactions. Extend `.env.example` only when code
+actually uses a new setting. Do not extract services or add infrastructure for
+hypothetical scale.
+
+## Verification and migrations
 
 ```bash
-pg_ctl -D .local/postgres status
-pg_ctl -D .local/postgres -m fast -w stop
+bash scripts/check.sh
 ```
 
-Stopping it preserves the database files. These commands target only `.local/postgres/`; the existing PostgreSQL service on port 5432 is unchanged.
+Default checks verify gofmt without rewriting files, run uncached Go tests,
+vet, and build into ignored `.local/check/`. They explicitly clear the test
+connection variable in the child process and report skipped database coverage.
+They do not load `.env`, launch servers, or migrate databases.
 
-### Database setup on a fresh checkout
-
-Skip this section on the current machine. For a fresh checkout with no `.local/postgres/` cluster, run the following in Git Bash from `travel-planner-api/`:
+For integration coverage, export the connection for a separate disposable
+`_test` database, apply migrations, and select integration mode:
 
 ```bash
-export PATH="/c/Program Files/PostgreSQL/18/bin:$PATH"
-mkdir -p .local
-initdb -D .local/postgres -U travel_planner_dev \
-  --auth=scram-sha-256 --encoding=UTF8 --locale=C -W
-```
-
-`initdb` prompts you to choose the local database password. Once initialization succeeds, start PostgreSQL and create the databases; enter that password when prompted:
-
-```bash
-pg_ctl -D .local/postgres -l .local/postgres.log \
-  -o "-h 127.0.0.1 -p 55432" -w start
-createdb -h 127.0.0.1 -p 55432 -U travel_planner_dev -W travel_planner
-createdb -h 127.0.0.1 -p 55432 -U travel_planner_dev -W travel_planner_test
-if [ ! -f .env ]; then
-  cp .env.example .env
-fi
-```
-
-Edit `.env` in your editor to use these settings, replacing `YOUR_PASSWORD` with the password you chose (URL-encode special characters in the password):
-
-```dotenv
-PORT=8080
-DATABASE_URL=postgres://travel_planner_dev:YOUR_PASSWORD@127.0.0.1:55432/travel_planner?sslmode=disable
-AUTH0_ISSUER_URL=https://YOUR_AUTH0_DOMAIN/
-AUTH0_AUDIENCE=https://travel-planner-api
-TEST_DATABASE_URL=postgres://travel_planner_dev:YOUR_PASSWORD@127.0.0.1:55432/travel_planner_test?sslmode=disable
-```
-
-Then follow the migration and API startup commands above. Keep `.env` local; it is already ignored by Git.
-
-## Architecture and folders
-
-Requests follow `router -> handler -> service -> repository -> PostgreSQL`. Each feature owns its business rules and SQL; services depend on small repository interfaces.
-
-```text
-travel-planner-api/
-├── cmd/api/main.go        # Startup, dependency wiring, graceful shutdown
-├── internal/
-│   ├── config/            # Environment configuration
-│   ├── database/          # Shared pgx connection pool and startup check
-│   ├── server/            # Chi routes, timeouts, JSON logs, recovery
-│   ├── httpx/             # JSON responses, request decoding, IDs, pagination
-│   ├── apperror/          # Shared validation and not-found errors
-│   ├── trips/             # Model, handler, service, repository, unit tests
-│   ├── memberships/       # Roles, invitations, authorization, ownership transfer
-│   └── itinerary/         # Model, handler, service, repository, unit tests
-├── migrations/            # Goose SQL migrations
-├── integration/           # HTTP-to-PostgreSQL lifecycle test
-├── scripts/               # Optional local database helper
-├── .env.example           # Example settings without real credentials
-├── .gitignore
-├── go.mod
-└── go.sum
-```
-
-Authentication lives in `internal/auth/`; it validates Auth0 tokens and provisions local users.
-
-## API
-
-All feature endpoints use the `/api/v1` prefix and require an Auth0 bearer access token. Request bodies and successful resource responses are JSON.
-
-| Method | Path | Result |
-| --- | --- | --- |
-| GET | `/health` | Server status, HTTP 200 |
-| GET | `/api/v1/me` | Current local user, HTTP 200 |
-| POST | `/api/v1/trips` | Create an owned trip, HTTP 201 |
-| GET | `/api/v1/trips` | List trips the caller owns or has joined, HTTP 200 |
-| GET / PUT / DELETE | `/api/v1/trips/{tripID}` | Read / replace / delete according to the caller's role |
-| GET | `/api/v1/trips/{tripID}/members` | List all participants, including the owner |
-| POST / GET | `/api/v1/trips/{tripID}/invitations` | Create or list invitations as owner |
-| DELETE | `/api/v1/trips/{tripID}/invitations/{invitationID}` | Revoke an invitation as owner |
-| POST | `/api/v1/invitations/accept` | Accept an invitation using a verified matching email |
-| PUT / DELETE | `/api/v1/trips/{tripID}/members/{userID}` | Change a role or remove/leave a trip |
-| POST | `/api/v1/trips/{tripID}/transfer-ownership` | Transfer ownership to an existing member |
-| POST | `/api/v1/trips/{tripID}/activities` | Create scheduled activity, HTTP 201 |
-| GET | `/api/v1/trips/{tripID}/activities` | List activities in schedule order |
-| GET | `/api/v1/trips/{tripID}/activities/conflicts` | List advisory overlapping activity pairs as any participant |
-| GET | `/api/v1/trips/{tripID}/activities/overlaps?starts_at=...&ends_at=...&exclude_id=...` | Check a proposed interval against up to 10 saved activities; `exclude_id` is optional |
-| GET / PUT / DELETE | `/api/v1/trips/{tripID}/activities/{activityID}` | Read / replace / delete an activity within that trip |
-| GET | `/api/v1/places/search?q=...` | Submit-only OSM place search, at most 10 results; use `scope=destination` for cities and countries |
-| POST | `/api/v1/places/resolve` | Refresh and save an OSM object reference such as `{"provider_place_id":"N123"}` |
-| GET | `/api/v1/places/{placeID}` | Read a normalized saved place |
-
-Reads and replacements return HTTP 200; deletion returns HTTP 204 with no body. Creation also returns a `Location` header. IDs are positive integers. Missing or invalid authentication returns HTTP 401, invalid input returns HTTP 400, missing resources return HTTP 404, and unexpected errors return HTTP 500. Errors use `{"error":"message"}` without database details.
-
-List endpoints return arrays, including `[]` when empty. Trip, activity, and conflict lists accept `?limit=50&offset=0`; limit defaults to 50 and is capped at 100. Trips sort by newest ID first; activities sort by start instant and then ID. Conflict pairs sort by overlap start and then both activity IDs before pagination. Listing activities or conflicts for a nonexistent or inaccessible trip returns HTTP 404.
-
-Create a trip:
-
-```bash
-ACCESS_TOKEN=YOUR_AUTH0_ACCESS_TOKEN
-curl --fail-with-body http://127.0.0.1:8080/api/v1/trips \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"Cebu weekend","destination_place_id":123,"starts_at":"2026-10-01T01:00:00Z","ends_at":"2026-10-03T10:00:00Z"}'
-```
-
-Create an activity using the trip ID returned above:
-
-```bash
-TRIP_ID=1  # Replace with the returned trip ID.
-curl --fail-with-body "http://127.0.0.1:8080/api/v1/trips/$TRIP_ID/activities" \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"Breakfast","starts_at":"2026-10-01T09:00:00+08:00","ends_at":"2026-10-01T10:00:00+08:00","notes":"Near the hotel"}'
-```
-
-First search with `scope=destination`, then resolve a selected `provider_place_id` to obtain its local `id` for `destination_place_id`. Use the same fields with `PUT` to replace a resource. Trip fields are required. Activity fields are required except `notes`, which defaults to an empty string.
-
-Trips can use inclusive `start_date` and `end_date` values (`YYYY-MM-DD`) with both `starts_at` and `ends_at` omitted or null. Same-day trips are allowed. For example: `{"name":"Cebu weekend","destination_place_id":123,"start_date":"2026-10-01","end_date":"2026-10-03"}`. Exact times are optional as a pair of ordered RFC3339 timestamps with an explicit offset or `Z`; when supplied, their local dates must match any supplied dates. Existing timestamp-only requests remain supported. A PUT with dates and null or omitted times removes the precise time restriction.
-
-The API derives the trip destination and IANA time zone from the selected place, and each activity's zone from its trip. Activities still require exact times. For date-only trips, both activity endpoints must fall on the selected local dates; for trips with exact times, activities must fit within that interval. Trip edits that exclude existing activities return 409. Instants are stored as `TIMESTAMPTZ` and returned in UTC. Unknown JSON fields and bodies over 1 MiB are rejected.
-
-Deleting a trip also deletes its activities. Activities are always addressed within their parent trip. Days can be derived from activity timestamps in the trip time zone; this version has no separate day-management endpoint or manual ordering.
-
-Activity creation and replacement require their complete interval to fit within the trip's exact start and end instants. Trip edits that would exclude a saved activity return HTTP 409. Existing activity instants are preserved when the trip zone changes. Overlaps are advisory and allowed; the `overlaps` endpoint accepts a proposed RFC3339 interval and optionally excludes the activity being edited.
-
-Activity responses include `created_by_user_id`, assigned from the authenticated creator and preserved through edits, ownership transfers, and membership removal. This field cannot be supplied in POST or PUT JSON.
-
-Owners and editors may change activities; members and viewers may read them and view conflicts. Conflict reporting is advisory: touching endpoints do not overlap, and every overlapping pair within the trip is reported once with ascending IDs and UTC overlap timestamps:
-
-```json
-[{"activity_ids":[1,2],"overlap_starts_at":"2026-10-01T01:30:00Z","overlap_ends_at":"2026-10-01T02:00:00Z"}]
-```
-
-Group split/rejoin, templates, expenses, and realtime collaboration remain future work.
-
-Activities may also include nullable `place_id`. Activity reads include the saved `place` object from PostgreSQL; clearing or deleting a place leaves the activity title and notes intact. OpenFreeMap renders the trip map without a key. Place search uses Nominatim only after a user submits a query, with a 24-hour result cache, a 10-searches-per-user-per-minute limit, and at most one outbound request per second across this single API instance. Public Nominatim is suitable here only for modest demo traffic. Travel-time estimates remain future work.
-
-## Migrations, tests, and build
-
-Apply migrations to the separate test database before integration tests:
-
-```bash
+# Only source your trusted local .env; never print its contents or credentials.
 set -a
 source .env
 set +a
+# Confirm TEST_DATABASE_URL targets your disposable _test database first.
 goose -dir migrations postgres "$TEST_DATABASE_URL" up
-go test ./...
-go vet ./...
-go build -o travel-planner-api.exe ./cmd/api
+bash scripts/check.sh --integration
 ```
 
-Without `TEST_DATABASE_URL`, integration tests explicitly skip; unit and handler tests still run. With it, tests exercise actual PostgreSQL persistence, CRUD, role permissions, creator identity and retention, date-boundary failures, UTC conversion, conflict ordering and pagination, parent-trip isolation, and cascading deletion. They remove only their own fixtures. Validation tests cover invalid dates, time zones, IDs, JSON, pagination, midnight crossings, and daylight-saving transitions.
+Missing `TEST_DATABASE_URL` fails integration mode before running checks.
+Existing tests verify the actual database name ends in `_test` and remove their
+own fixtures. Auth0 and place-provider tests use local fakes; no live accounts
+or Nominatim requests are required.
 
-The migrations create trips, itinerary items, local users, trip ownership, memberships, hashed invitations, and activity creators. The ownership migration intentionally stops if legacy trips exist; reset local trip data or perform a reviewed one-off owner assignment before rerunning it. The creator migration backfills existing activities from their current trip owner before enforcing a required user foreign key. Apply it before running the updated API. To check the latest migration rollback on the disposable test database only:
+Add a new numbered migration for schema changes; never edit an applied one.
+Verify rollback only on a disposable database. CI uses a fresh PostgreSQL 18
+service for `up -> down-to 0 -> up`, then runs integration checks. Never run
+`down-to 0` against a database containing data you need to preserve.
 
-```bash
-goose -dir migrations postgres "$TEST_DATABASE_URL" down
-goose -dir migrations postgres "$TEST_DATABASE_URL" up
-```
+Migration `00003` deliberately rejects legacy trips without explicit owners;
+use a reviewed owner assignment before retrying it. Migration `00005` backfills
+creators from current trip owners. Migrations `00006`/`00007` add places,
+destination references, and optional exact trip windows. Production schema
+repairs require forward migrations rather than blindly reversing data changes.
 
-The latest rollback removes the destination and exact-window columns on a disposable test database. Development migrations are run explicitly before starting the API.
+[GitHub Actions](.github/workflows/check.yml) runs on pushes and pull requests.
+It checks script preflight, migration reversibility, and the same integration
+command. It does not deploy or configure branch protection. Check failures
+should be required in repository settings if you want merges blocked.
+
+## Working with a coding agent
+
+Start in this repository. [AGENTS.md](AGENTS.md) is the shared instruction entry
+point; [CLAUDE.md](CLAUDE.md) imports it for Claude. Read only relevant domain
+sections and the actual code/tests for the task. Plans are proposals requiring
+revalidation, not instructions to implement the next numbered feature.
+
+For example: "Fix the trip-window rejection; keep existing activities intact
+and add a focused regression test." Describe the outcome, let the agent inspect
+code, make a focused change, run checks, review the diff, report evidence and
+gaps, then review the result yourself. Update the existing guide when a rule
+changes rather than adding another competing document.
+
+The project skill [travel-api-change](.agents/skills/travel-api-change/SKILL.md)
+helps trace API changes through their contract, authorization, and persistence
+effects. In Codex, for example: `$travel-api-change Fix trip-window rejection
+while preserving saved activities and verify the SQL behavior.` Codex can also
+select the skill for matching tasks. In Claude, ask it to read and follow that
+linked file for the task; Codex's skill discovery does not configure Claude
+automatically.
+
+`AGENTS.md` holds essential rules; `.agents/skills/` groups reusable task
+workflows; `docs/backend` holds current domain knowledge. Shared plans belong
+in GitHub Issues. Optional notes in `docs/plans`, historical copies in
+`docs/archive`, and scratch work in `.scratch` stay local and are ignored by
+Git. Scripts and GitHub workflows remain in their normal tool locations.
+
+## As this project grows
+
+The check modes, PostgreSQL-backed CI workflow, and API-change skill exist
+today. The upgrades below are optional next steps when their trigger occurs,
+not installed tools or instructions to implement future product features.
+
+| Trigger | Small next step |
+| --- | --- |
+| A change spans sessions or requires coordinated decisions | Save a task implementation plan using the format below |
+| Regressions escape existing checks | Extend HTTP/PostgreSQL coverage at the failing boundary, including transaction and authorization cases |
+| Client/server payloads frequently drift | Own a versioned OpenAPI contract, compatibility checks, and generated client/types for consumers |
+| A module develops genuinely different conventions | Add concise instructions near that module; keep shared rules at the root |
+| A recurring task needs the same explanation | Refine this skill or add one focused skill with a distinct trigger |
+| Stable module boundaries repeatedly get violated | Add focused dependency-boundary checks for the specific allowed imports |
+| More contributors need consistent review ownership | Configure required CI checks and add ownership rules for the relevant areas |
+
+For a substantial requested task, record a plan in GitHub Issues when needed.
+Local working notes may use ignored `docs/plans/<short-task>.md` files.
+Record: **status** (proposed, active, or completed), **goal**, **acceptance
+criteria**, **affected areas**, **implementation steps**, **decisions/progress**,
+and **verification**. Keep it current so another session can resume. Existing
+future-feature proposals remain proposed until explicitly authorized and
+revalidated against current code. Small fixes can stay in the conversation.
+
+Review these triggers when a recurring failure or coordination cost appears.
+Assess future deployment, monitoring, security, and recovery requirements
+separately from this coding-workflow roadmap. Agent review services, model
+APIs, and observability stacks are not prerequisites here.

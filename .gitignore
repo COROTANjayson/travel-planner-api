@@ -5,10 +5,9 @@
 *.exe
 coverage.out
 
-
-travel-planner.md
-/docs/*
-!/docs/backend/
-/docs/backend/*
-!/docs/backend/README.md
-!/docs/backend/06-places-and-maps.md
+# Local notes and generated reports
+/.scratch/
+/docs/plans/
+/docs/archive/
+/architecture-review-*.html
+/matt-pocock-setup-draft-*.md

@@ -1,0 +1,54 @@
+name: API checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: travel_planner_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d travel_planner_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:ci-only-password@127.0.0.1:5432/travel_planner_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Check script preflight
+        run: |
+          bash -n scripts/check.sh
+          if env -u TEST_DATABASE_URL bash scripts/check.sh --integration; then
+            echo 'Integration mode must reject a missing test database.' >&2
+            exit 1
+          fi
+          if bash scripts/check.sh --unknown; then
+            echo 'Unknown arguments must fail.' >&2
+            exit 1
+          fi
+      - name: Install migration tool
+        run: go install github.com/pressly/goose/v3/cmd/goose@v3.28.0
+      - name: Verify migrations on disposable PostgreSQL
+        run: |
+          goose -dir migrations postgres "$TEST_DATABASE_URL" up
+          goose -dir migrations postgres "$TEST_DATABASE_URL" down-to 0
+          goose -dir migrations postgres "$TEST_DATABASE_URL" up
+      - run: bash scripts/check.sh --integration

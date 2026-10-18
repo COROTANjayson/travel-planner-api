@@ -1,77 +1,77 @@
-# 06 - Places and Maps
+# Places and maps
 
-## Goal and prerequisites
+Current behavior for the single-instance demo. See the
+[current backend guide](README.md) for shared HTTP/auth rules and scheduling.
+Group meetings and travel-time estimates are not implemented.
 
-Normalize OpenStreetMap place references, attach them to itinerary records, and provide bounded place search for a small, single-instance demo. Complete [itinerary](04-itinerary.md). Group meeting references and travel estimates are deferred until their clients exist.
+## Provider boundary
 
-## Schema
+`internal/places` owns the provider interface, Nominatim adapter, normalization,
+repository, and service. Production wiring uses a fixed server-side Nominatim
+endpoint, identifying User-Agent, and a five-second HTTP timeout. Clients cannot
+supply provider URLs. Convert vendor data immediately into bounded internal
+models; do not return/store raw provider payloads.
 
-Add `places`:
+Search is **explicit submit only**, never autocomplete. The current public
+provider arrangement assumes one API process and modest human demo traffic.
+The client uses MapLibre with OpenFreeMap tiles; no provider key is required.
+Revalidate provider usage policies before changing traffic patterns or deployment.
 
-| Column | Rule |
-| --- | --- |
-| `id` | Generated `BIGINT` primary key |
-| `provider` | Checked to `osm` initially |
-| `provider_place_id` | Non-empty; unique with provider |
-| `name`, `address` | Normalized display snapshots |
-| `latitude`, `longitude` | Double precision with valid range checks |
-| `time_zone` | Non-empty IANA name derived from coordinates with the embedded tzf dataset |
-| `refreshed_at` | Provider refresh time |
-| timestamps | Creation/update audit fields |
+## Routes and destination flow
 
-Add nullable `place_id` to `itinerary_items` with `ON DELETE SET NULL`. Activity titles and notes remain display snapshots when a provider record changes or is deleted. Add `meeting_place_id` only after groups exist.
+All routes require authentication:
 
-Cache normalized search results in PostgreSQL for 24 hours; do not persist raw provider payloads.
-
-Add `route_estimates` only when the estimate endpoint is implemented: origin/destination place IDs, travel mode, departure bucket, distance meters, duration seconds, provider timestamp, and expiry. Uniqueness covers the input tuple.
-
-PostGIS is not required for this module. Add it later only when the backend must execute radius, containment, or clustering queries at measured scale.
-
-## Configuration and provider boundary
-
-Use OpenFreeMap tiles with MapLibre in the browser and Nominatim search/lookup through the Go server. No provider key is required. Identify the app with a User-Agent, keep the provider URL fixed server-side, and use an HTTP client with a five-second timeout. Public Nominatim permits at most one request per second for the whole app and forbids autocomplete; this release assumes one API instance and modest human traffic.
-
-Define a small provider interface inside `internal/places` for search and lookup. Convert provider responses immediately into internal models. Do not expose or persist full provider payloads.
-
-## Routes
-
-| Method | Path | Permission |
+| Method | Route | Behavior |
 | --- | --- | --- |
-| `GET` | `/api/v1/places/search?q=...` | Authenticated, rate-limited |
-| `POST` | `/api/v1/places/resolve` | Authenticated |
-| `GET` | `/api/v1/places/{placeID}` | Authenticated |
+| GET | `/api/v1/places/search?q=...` | Normalized candidates, at most 10 |
+| GET | `/api/v1/places/search?q=...&scope=destination` | City/country candidates only |
+| POST | `/api/v1/places/resolve` | Refresh/upsert a stable OSM reference, returning 200 |
+| GET | `/api/v1/places/{placeID}` | Read a saved normalized place |
 
-Resolve accepts a stable OSM object reference such as `N123`, refreshes provider details, upserts the normalized place, and returns it. Activity POST/PUT accepts nullable `place_id`; reads include the saved place data from PostgreSQL. Route estimates remain deferred.
+Resolve accepts `{"provider_place_id":"N123"}`; N/W/R references must use a
+positive OSM ID. Select a destination candidate, resolve it, then send its local
+`id` as `destination_place_id` in a trip write. The service validates city/country
+kind and derives the trip's destination label and IANA time zone.
 
-## Validation and caching
+Activity writes accept nullable `place_id`. Reads include saved `place` data
+from PostgreSQL without provider calls. Deleting a place clears activity/trip
+references via `ON DELETE SET NULL`; activity titles/notes and trip destination
+snapshots survive. No same-trip ownership is implied for globally saved places.
 
-- Trim search text, require 2-200 bytes, and cap returned results at 10. Search only on explicit submit.
-- Allow at most 10 searches per user per minute and one outbound Nominatim request per second per API instance.
-- Validate coordinates and IANA zones before persistence.
-- Refresh place details on explicit resolve. Saved activity reads do not depend on provider availability.
-- Provider timeout, quota, and malformed-response failures map to a safe `503` without leaking keys or payloads.
-- Never accept arbitrary provider URLs from clients.
+## Storage, validation, and limits
 
-## Implementation steps
+- `places` uses generated BIGINT IDs and unique `(provider, provider_place_id)`;
+  the provider is currently `osm`. Snapshots include kind, name/address,
+  coordinates, IANA zone, refresh time, and audit timestamps. Schema constraints
+  and service validation protect coordinates and required/length-bounded fields.
+- Zones derive from coordinates using the embedded tzf dataset, not browser
+  location. Reject invalid/unknown zones and malformed provider data safely.
+- Trim queries and require 2-200 bytes. Cache normalized results in PostgreSQL
+  for 24 hours with destination searches separated from ordinary searches.
+- The service counts at most 10 searches per user per minute, including cache
+  hits. Counters are process-local; they are not a distributed quota.
+- Nominatim search/lookup calls share a process-local one-request-per-second
+  throttle. Excess queued work returns 429 rather than waiting indefinitely.
+- Provider failures/timeouts/malformed responses return safe 503 responses;
+  throttling returns 429. Preserve request cancellation and bounded payload reads.
+- Explicit resolve refreshes the snapshot; normal saved-place reads continue
+  during provider outages. No Redis, spatial extension, or routes cache exists.
 
-1. Add place migrations, constraints, and attachment columns.
-2. Add a provider HTTP client with an explicit timeout and application-wide outbound throttle.
-3. Implement `internal/places` provider adapter, repository, service, and handlers.
-4. Implement normalized upsert by `(provider, provider_place_id)`.
-5. Extend itinerary/group inputs with optional local `place_id` values and same-trip authorization.
-6. Add route estimates and their PostgreSQL cache only when a client needs them.
-7. Add per-user and provider rate limits at the API edge.
+## Verification and future work
 
-## Tests
+Use fake HTTP providers for success, empty responses, timeout, quota, malformed
+payloads, and destination classification. Service tests cover query validation,
+cache behavior, coordinate/zone normalization, and stable references. PostgreSQL
+integration tests cover resolved destinations and activity attachments. Use the
+[README's integration command](../../README.md#verification-and-migrations).
 
-- Use a fake provider server for successful, empty, timeout, quota, and malformed responses.
-- Test normalization, deduplication, stale refresh, coordinate/zone validation, and cache expiry.
-- Verify inaccessible trips cannot be used to request estimates.
-- Verify deleting a normalized place preserves activities/groups and clears only their reference.
+Before multiple API replicas or higher traffic, revisit the provider arrangement
+and shared throttling. Route estimates, meeting-place references, PostGIS, and
+another cache require an actual feature/scale need; they are not scaffolding
+requirements for ordinary changes.
 
-## Completion criteria
-
-- API contracts contain normalized place data, not vendor response objects.
-- Provider calls have timeouts, safe errors, rate limits, and bounded caching.
-- Activities and group meetings can reference places without depending on provider availability for normal reads.
-- No spatial extension or separate cache is added without a demonstrated query need.
+The original deferred estimate sketch proposed a PostgreSQL cache keyed by
+origin/destination place IDs, travel mode, and departure bucket, storing distance
+meters, duration seconds, provider timestamp, and expiry. Preserve uniqueness
+over that input tuple if a client later justifies this feature; no estimate
+endpoint or table currently exists.
