@@ -3,6 +3,8 @@ package itinerary
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 	"travel-planner/travel-planner-api/internal/apperror"
@@ -165,5 +167,74 @@ func TestTripDateLoadFailurePreventsWrites(t *testing.T) {
 		if _, err := s.Update(context.Background(), 7, 1, 2, in); !errors.Is(err, failure) || repo.called {
 			t.Fatalf("update ignored trip load failure: %v", err)
 		}
+	}
+}
+
+func TestCategoryAndChecklist(t *testing.T) {
+	start := time.Date(2026, 10, 1, 1, 0, 0, 0, time.UTC)
+	input := Input{Title: "Outing", StartsAt: start, EndsAt: start.Add(time.Hour)}
+	store := &recordingStore{}
+	service := NewService(store, allowAuthorizer{})
+	created, err := service.Create(context.Background(), 1, 2, input)
+	if err != nil || created.Category == nil || *created.Category != "Activity" || created.Checklist == nil || *created.Checklist == nil || len(*created.Checklist) != 0 {
+		t.Fatalf("creation defaults = %+v, %v", created, err)
+	}
+	if _, err := service.Update(context.Background(), 1, 2, 3, input); err != nil || store.input.Category != nil || store.input.Checklist != nil {
+		t.Fatalf("omitted additions must reach update unchanged: %+v, %v", store.input, err)
+	}
+	category := "  Shopping  "
+	items := []ChecklistItem{{Text: "  Buy tickets  ", Done: true}, {Text: "Buy tickets"}}
+	input.Category, input.Checklist = &category, &items
+	if _, err := service.Update(context.Background(), 1, 2, 3, input); err != nil {
+		t.Fatal(err)
+	}
+	if *store.input.Category != "Shopping" || !reflect.DeepEqual(*store.input.Checklist, []ChecklistItem{{Text: "Buy tickets", Done: true}, {Text: "Buy tickets"}}) {
+		t.Fatalf("normalization lost order or completion: %+v", store.input)
+	}
+	if category != "  Shopping  " || items[0].Text != "  Buy tickets  " {
+		t.Fatal("normalization mutated the caller's draft")
+	}
+	for _, tc := range []struct {
+		name     string
+		category string
+		items    []ChecklistItem
+		valid    bool
+	}{
+		{"blank category", " \t", nil, false},
+		{"long category", strings.Repeat("x", 101), nil, false},
+		{"category byte limit", strings.Repeat("é", 51), nil, false},
+		{"blank item", "Activity", []ChecklistItem{{Text: " \n"}}, false},
+		{"long item", "Activity", []ChecklistItem{{Text: strings.Repeat("x", 201)}}, false},
+		{"item byte limit", "Activity", []ChecklistItem{{Text: strings.Repeat("é", 101)}}, false},
+		{"too many items", "Activity", make([]ChecklistItem, 51), false},
+		{"empty list", "Rest", []ChecklistItem{}, true},
+		{"exact text limits", strings.Repeat("é", 50), []ChecklistItem{{Text: strings.Repeat("é", 100)}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := input
+			in.Category, in.Checklist = &tc.category, &tc.items
+			for _, create := range []bool{true, false} {
+				store.called = false
+				var err error
+				if create {
+					_, err = service.Create(context.Background(), 1, 2, in)
+				} else {
+					_, err = service.Update(context.Background(), 1, 2, 3, in)
+				}
+				if tc.valid && (err != nil || !store.called) {
+					t.Fatalf("valid input rejected: %v", err)
+				}
+				if !tc.valid && (!errors.Is(err, apperror.ErrInvalid) || store.called) {
+					t.Fatalf("invalid input reached persistence: %v", err)
+				}
+			}
+		})
+	}
+	items = make([]ChecklistItem, 50)
+	for index := range items {
+		items[index].Text = "Step"
+	}
+	if _, err := service.Create(context.Background(), 1, 2, input); err != nil {
+		t.Fatalf("50 items rejected: %v", err)
 	}
 }

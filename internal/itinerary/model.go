@@ -5,13 +5,20 @@ import (
 	"travel-planner/travel-planner-api/internal/places"
 )
 
+type ChecklistItem struct {
+	Text string `json:"text"`
+	Done bool   `json:"done"`
+}
+
 type Input struct {
-	Title    string    `json:"title"`
-	StartsAt time.Time `json:"starts_at"`
-	EndsAt   time.Time `json:"ends_at"`
-	TimeZone string    `json:"time_zone"`
-	Notes    string    `json:"notes"`
-	PlaceID  *int64    `json:"place_id"`
+	Title     string           `json:"title"`
+	StartsAt  time.Time        `json:"starts_at"`
+	EndsAt    time.Time        `json:"ends_at"`
+	TimeZone  string           `json:"time_zone"`
+	Notes     string           `json:"notes"`
+	PlaceID   *int64           `json:"place_id"`
+	Category  *string          `json:"category,omitempty"`
+	Checklist *[]ChecklistItem `json:"checklist,omitempty"`
 }
 
 type Activity struct {

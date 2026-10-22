@@ -17,7 +17,7 @@ type Repository struct{ pool *pgxpool.Pool }
 func NewRepository(pool *pgxpool.Pool) *Repository { return &Repository{pool: pool} }
 
 const columns = `i.id, i.trip_id, i.created_by_user_id, i.title, i.starts_at, i.ends_at, i.time_zone, i.notes,
-	i.place_id, i.created_at, i.updated_at, CASE WHEN p.id IS NULL THEN NULL ELSE jsonb_build_object(
+	i.place_id, i.created_at, i.updated_at, i.category, i.checklist, CASE WHEN p.id IS NULL THEN NULL ELSE jsonb_build_object(
 	'id',p.id,'provider',p.provider,'provider_place_id',p.provider_place_id,'name',p.name,'address',p.address,
 	'latitude',p.latitude,'longitude',p.longitude,'time_zone',p.time_zone,'kind',p.kind,'refreshed_at',p.refreshed_at,
 	'created_at',p.created_at,'updated_at',p.updated_at) END`
@@ -25,7 +25,9 @@ const columns = `i.id, i.trip_id, i.created_by_user_id, i.title, i.starts_at, i.
 func scan(row pgx.Row) (Activity, error) {
 	var a Activity
 	var placeJSON []byte
-	err := row.Scan(&a.ID, &a.TripID, &a.CreatedByUserID, &a.Title, &a.StartsAt, &a.EndsAt, &a.TimeZone, &a.Notes, &a.PlaceID, &a.CreatedAt, &a.UpdatedAt, &placeJSON)
+	var category string
+	var checklistJSON []byte
+	err := row.Scan(&a.ID, &a.TripID, &a.CreatedByUserID, &a.Title, &a.StartsAt, &a.EndsAt, &a.TimeZone, &a.Notes, &a.PlaceID, &a.CreatedAt, &a.UpdatedAt, &category, &checklistJSON, &placeJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, apperror.ErrNotFound
 	}
@@ -39,6 +41,11 @@ func scan(row pgx.Row) (Activity, error) {
 	if err != nil {
 		return a, err
 	}
+	var checklist []ChecklistItem
+	if err := json.Unmarshal(checklistJSON, &checklist); err != nil {
+		return a, err
+	}
+	a.Category, a.Checklist = &category, &checklist
 	if placeJSON != nil {
 		if err := json.Unmarshal(placeJSON, &a.Place); err != nil {
 			return a, err
@@ -49,6 +56,10 @@ func scan(row pgx.Row) (Activity, error) {
 	return a, err
 }
 func (r *Repository) Create(ctx context.Context, userID, tripID int64, in Input) (Activity, error) {
+	checklistJSON, err := json.Marshal(in.Checklist)
+	if err != nil {
+		return Activity{}, err
+	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return Activity{}, err
@@ -57,9 +68,9 @@ func (r *Repository) Create(ctx context.Context, userID, tripID int64, in Input)
 	if err := checkWindowLocked(ctx, tx, tripID, in); err != nil {
 		return Activity{}, err
 	}
-	a, err := scan(tx.QueryRow(ctx, `WITH saved AS (INSERT INTO itinerary_items (created_by_user_id,trip_id,title,starts_at,ends_at,time_zone,notes,place_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *) SELECT `+columns+` FROM saved i LEFT JOIN places p ON p.id=i.place_id`,
-		userID, tripID, in.Title, in.StartsAt, in.EndsAt, in.TimeZone, in.Notes, in.PlaceID))
+	a, err := scan(tx.QueryRow(ctx, `WITH saved AS (INSERT INTO itinerary_items (created_by_user_id,trip_id,title,starts_at,ends_at,time_zone,notes,place_id,category,checklist)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb) RETURNING *) SELECT `+columns+` FROM saved i LEFT JOIN places p ON p.id=i.place_id`,
+		userID, tripID, in.Title, in.StartsAt, in.EndsAt, in.TimeZone, in.Notes, in.PlaceID, in.Category, checklistJSON))
 	if err != nil {
 		return Activity{}, err
 	}
@@ -178,6 +189,14 @@ func (r *Repository) List(ctx context.Context, tripID int64, limit, offset int, 
 	return result, rows.Err()
 }
 func (r *Repository) Update(ctx context.Context, tripID, id int64, in Input) (Activity, error) {
+	var checklistJSON []byte
+	if in.Checklist != nil {
+		var err error
+		checklistJSON, err = json.Marshal(in.Checklist)
+		if err != nil {
+			return Activity{}, err
+		}
+	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return Activity{}, err
@@ -187,8 +206,8 @@ func (r *Repository) Update(ctx context.Context, tripID, id int64, in Input) (Ac
 		return Activity{}, err
 	}
 	a, err := scan(tx.QueryRow(ctx, `WITH saved AS (UPDATE itinerary_items SET title=$3, starts_at=$4, ends_at=$5, time_zone=$6,
-		notes=$7,place_id=$8,updated_at=now() WHERE trip_id=$1 AND id=$2 RETURNING *)
-		SELECT `+columns+` FROM saved i LEFT JOIN places p ON p.id=i.place_id`, tripID, id, in.Title, in.StartsAt, in.EndsAt, in.TimeZone, in.Notes, in.PlaceID))
+		notes=$7,place_id=$8,category=COALESCE($9::text,category),checklist=COALESCE($10::jsonb,checklist),updated_at=now() WHERE trip_id=$1 AND id=$2 RETURNING *)
+		SELECT `+columns+` FROM saved i LEFT JOIN places p ON p.id=i.place_id`, tripID, id, in.Title, in.StartsAt, in.EndsAt, in.TimeZone, in.Notes, in.PlaceID, in.Category, checklistJSON))
 	if err != nil {
 		return Activity{}, err
 	}

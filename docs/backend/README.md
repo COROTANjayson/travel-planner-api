@@ -125,7 +125,8 @@ are persisted as TIMESTAMPTZ and returned in UTC with IANA zone metadata.
   their UTC instants; date-only boundaries are checked in the new trip zone.
 - Activity responses include immutable `created_by_user_id`, derived from the
   authenticated creator and retained through edits, member removal, and transfer.
-  POST/PUT never accepts creator or audit fields. PUT remains full replacement.
+  POST/PUT never accepts creator or audit fields. PUT replaces the original
+  fields; omitted or null category/checklist additions preserve saved values.
 - No separate day or manual-order API exists. Days derive from start instants
   in the trip zone. Activity lists optionally accept an ordered pair of
   `start_from`/`start_before` UTC instants with an exclusive upper bound.
@@ -133,8 +134,22 @@ are persisted as TIMESTAMPTZ and returned in UTC with IANA zone metadata.
 Example activity input:
 
 ```json
-{"title":"Breakfast","starts_at":"2026-10-01T01:00:00Z","ends_at":"2026-10-01T02:00:00Z","notes":"Near the hotel","place_id":null}
+{"title":"Breakfast","starts_at":"2026-10-01T01:00:00Z","ends_at":"2026-10-01T02:00:00Z","notes":"Near the hotel","place_id":null,"category":"Eating","checklist":[{"text":"Reserve a table","done":true}]}
 ```
+
+Activities expose a `category` string and ordered `checklist` array of
+`{text, done}` items through existing create, update, and read routes. Presets
+are Rest, Sleeping, Eating, Travel, and Activity; custom per-entry labels are
+also accepted, without a category library. Categories and item text are trimmed
+and must contain 1–100 and 1–200 UTF-8 bytes respectively; lists allow at most
+50 items. Duplicate item text is allowed. Items have no independent time/place.
+
+Missing/null additions on creation default to `Activity` and `[]`; existing
+rows receive those defaults in migration `00008`. Missing/null additions on
+PUT preserve saved values atomically, while explicit `[]` clears a checklist.
+Responses always contain a category string and checklist array. Completion is
+shared and follows existing owner/editor write permissions. Checklist edits
+save with the whole form; concurrent edits remain last-write-wins.
 
 ## Advisory conflicts
 

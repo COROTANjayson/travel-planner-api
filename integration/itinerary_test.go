@@ -167,6 +167,62 @@ func TestItineraryPermissionsScheduleAndCreators(t *testing.T) {
 	var original itinerary.Activity
 	request(owner, "POST", base, in, 201, &original)
 	path := fmt.Sprintf("%s/%d", base, original.ID)
+	if original.Category == nil || *original.Category != "Activity" || original.Checklist == nil || *original.Checklist == nil || len(*original.Checklist) != 0 {
+		t.Fatalf("legacy creation did not receive defaults: %+v", original)
+	}
+	category := "  Shopping  "
+	checklist := []itinerary.ChecklistItem{{Text: "  Buy tickets  ", Done: true}, {Text: "Buy tickets"}}
+	categorized := in
+	categorized.Category, categorized.Checklist = &category, &checklist
+	request(viewer, "PUT", path, categorized, 403, nil)
+	request(member, "PUT", path, categorized, 403, nil)
+	request(outsider, "PUT", path, categorized, 404, nil)
+	var saved itinerary.Activity
+	request(editor, "PUT", path, categorized, 200, &saved)
+	wantChecklist := []itinerary.ChecklistItem{{Text: "Buy tickets", Done: true}, {Text: "Buy tickets"}}
+	assertChecklist := func(activity itinerary.Activity) {
+		t.Helper()
+		if activity.Category == nil || *activity.Category != "Shopping" || activity.Checklist == nil || !reflect.DeepEqual(*activity.Checklist, wantChecklist) {
+			t.Fatalf("category/checklist lost: %+v", activity)
+		}
+	}
+	assertChecklist(saved)
+	var customCreated itinerary.Activity
+	request(owner, "POST", base, categorized, 201, &customCreated)
+	assertChecklist(customCreated)
+	request(owner, "DELETE", fmt.Sprintf("%s/%d", base, customCreated.ID), nil, 204, nil)
+	request(viewer, "GET", path, nil, 200, &saved)
+	assertChecklist(saved)
+	var listed []itinerary.Activity
+	request(viewer, "GET", base, nil, 200, &listed)
+	assertChecklist(listed[0])
+	// Old full-replacement clients cannot erase additions they do not send.
+	request(owner, "PUT", path, in, 200, &saved)
+	assertChecklist(saved)
+	legacy := map[string]any{"title": in.Title, "starts_at": in.StartsAt, "ends_at": in.EndsAt, "notes": in.Notes, "category": nil, "checklist": nil}
+	request(owner, "PUT", path, legacy, 200, &saved)
+	assertChecklist(saved)
+	for _, invalid := range []map[string]any{
+		{"category": " "}, {"category": strings.Repeat("x", 101)},
+		{"checklist": []any{map[string]any{"text": " "}}},
+		{"checklist": []any{map[string]any{"text": "Item", "done": "true"}}},
+		{"checklist": []any{map[string]any{"text": "Item", "extra": true}}},
+		{"checklist": "not an array"}, {"checklist": []any{nil}},
+	} {
+		body := map[string]any{"title": in.Title, "starts_at": in.StartsAt, "ends_at": in.EndsAt}
+		for key, value := range invalid {
+			body[key] = value
+		}
+		request(owner, "POST", base, body, 400, nil)
+		request(owner, "PUT", path, body, 400, nil)
+	}
+	request(viewer, "GET", path, nil, 200, &saved)
+	assertChecklist(saved)
+	legacy["category"], legacy["checklist"] = "Activity", []itinerary.ChecklistItem{}
+	request(owner, "PUT", path, legacy, 200, &original)
+	if *original.Category != "Activity" || original.Checklist == nil || *original.Checklist == nil || len(*original.Checklist) != 0 {
+		t.Fatal("explicit empty checklist did not clear saved steps")
+	}
 	rangeURL := fmt.Sprintf("%s?start_from=%s&start_before=%s", base, start.Format(time.RFC3339), start.Add(time.Minute).Format(time.RFC3339))
 	var ranged []itinerary.Activity
 	request(owner, "GET", rangeURL, nil, 200, &ranged)
@@ -347,9 +403,12 @@ func TestItineraryPermissionsScheduleAndCreators(t *testing.T) {
 	tripInput.DestinationPlaceID = &destinationID
 	request(owner, "PUT", fmt.Sprintf("/api/v1/trips/%d", trip.ID), tripInput, 200, nil)
 	// Full replacement clears omitted notes and derives the activity zone from the trip.
-	travel := map[string]any{"title": "Travel", "starts_at": "2026-10-03T14:00:00+08:00", "ends_at": "2026-10-03T14:30:00+08:00", "time_zone": "America/Los_Angeles", "notes": "Travel notes"}
+	travel := map[string]any{"title": "Travel", "starts_at": "2026-10-03T14:00:00+08:00", "ends_at": "2026-10-03T14:30:00+08:00", "time_zone": "America/Los_Angeles", "notes": "Travel notes", "category": nil, "checklist": nil}
 	var authored itinerary.Activity
 	request(editor, "POST", base, travel, 201, &authored)
+	if authored.Category == nil || *authored.Category != "Activity" || authored.Checklist == nil || *authored.Checklist == nil {
+		t.Fatal("explicit null creation did not receive defaults")
+	}
 	authoredPath := fmt.Sprintf("%s/%d", base, authored.ID)
 	delete(travel, "notes")
 	request(owner, "PUT", authoredPath, travel, 200, &authored)

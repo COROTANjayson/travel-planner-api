@@ -40,6 +40,27 @@ func validate(in Input) (Input, error) {
 	if in.PlaceID != nil && *in.PlaceID <= 0 {
 		return in, fmt.Errorf("%w: place_id must be a positive integer", apperror.ErrInvalid)
 	}
+	if in.Category != nil {
+		category := strings.TrimSpace(*in.Category)
+		if category == "" || len(category) > 100 {
+			return in, fmt.Errorf("%w: category must contain 1 to 100 bytes", apperror.ErrInvalid)
+		}
+		in.Category = &category
+	}
+	if in.Checklist != nil {
+		if len(*in.Checklist) > 50 {
+			return in, fmt.Errorf("%w: checklist must contain at most 50 items", apperror.ErrInvalid)
+		}
+		items := make([]ChecklistItem, len(*in.Checklist))
+		for index, item := range *in.Checklist {
+			item.Text = strings.TrimSpace(item.Text)
+			if item.Text == "" || len(item.Text) > 200 {
+				return in, fmt.Errorf("%w: checklist item text must contain 1 to 200 bytes", apperror.ErrInvalid)
+			}
+			items[index] = item
+		}
+		in.Checklist = &items
+	}
 	if in.StartsAt.IsZero() || in.EndsAt.IsZero() || !in.EndsAt.After(in.StartsAt) ||
 		in.StartsAt.UTC().Year() < 1 || in.StartsAt.UTC().Year() > 9999 ||
 		in.EndsAt.UTC().Year() < 1 || in.EndsAt.UTC().Year() > 9999 {
@@ -95,6 +116,14 @@ func (s *Service) Create(ctx context.Context, userID, tripID int64, in Input) (A
 	in, err := s.validateForTrip(ctx, tripID, in)
 	if err != nil {
 		return Activity{}, err
+	}
+	if in.Category == nil {
+		category := "Activity"
+		in.Category = &category
+	}
+	if in.Checklist == nil {
+		items := []ChecklistItem{}
+		in.Checklist = &items
 	}
 	return s.store.Create(ctx, userID, tripID, in)
 }
