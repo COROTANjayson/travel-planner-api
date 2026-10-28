@@ -38,6 +38,54 @@ func (s *testStore) AcceptInvitation(context.Context, auth.User, []byte, time.Ti
 	return Participant{UserID: 2, Role: RoleEditor}, nil
 }
 
+func (s *testStore) ReceivedInvitations(context.Context, auth.User, time.Time) ([]ReceivedInvitation, error) {
+	s.called = true
+	return []ReceivedInvitation{{ID: 1}}, nil
+}
+
+func (s *testStore) AcceptInvitationByID(context.Context, auth.User, int64, time.Time) (Participant, error) {
+	s.called = true
+	return Participant{UserID: 2, Role: RoleEditor}, nil
+}
+
+func (s *testStore) DeclineInvitation(context.Context, auth.User, int64, time.Time) error {
+	s.called = true
+	return nil
+}
+
+func TestInboxRequiresVerifiedEmail(t *testing.T) {
+	email, blank := "traveler@example.com", "  "
+	for _, user := range []auth.User{
+		{ID: 1}, {ID: 1, Email: &email}, {ID: 1, Email: &blank, EmailVerified: true},
+	} {
+		store := &testStore{}
+		service := NewService(store)
+		if _, err := service.ReceivedInvitations(context.Background(), user); !errors.Is(err, apperror.ErrForbidden) {
+			t.Fatalf("inbox verification: %v", err)
+		}
+		if _, err := service.AcceptInvitationByID(context.Background(), user, 1); !errors.Is(err, apperror.ErrNotFound) {
+			t.Fatalf("accept verification: %v", err)
+		}
+		if err := service.DeclineInvitation(context.Background(), user, 1); !errors.Is(err, apperror.ErrNotFound) || store.called {
+			t.Fatalf("unverified inbox action reached repository: %v", err)
+		}
+	}
+	store := &testStore{}
+	service := NewService(store)
+	user := auth.User{ID: 2, Email: &email, EmailVerified: true}
+	if _, err := service.ReceivedInvitations(context.Background(), user); err != nil || !store.called {
+		t.Fatalf("verified inbox: %v", err)
+	}
+	store.called = false
+	if _, err := service.AcceptInvitationByID(context.Background(), user, 1); err != nil || !store.called {
+		t.Fatalf("verified accept: %v", err)
+	}
+	store.called = false
+	if err := service.DeclineInvitation(context.Background(), user, 1); err != nil || !store.called {
+		t.Fatalf("verified decline: %v", err)
+	}
+}
+
 func TestAuthorizationMatrix(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {

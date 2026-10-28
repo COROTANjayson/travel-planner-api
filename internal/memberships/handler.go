@@ -18,6 +18,51 @@ func currentUser(w http.ResponseWriter, r *http.Request) (auth.User, bool) {
 }
 
 func Register(r chi.Router, service *Service) {
+	r.Get("/invitations", func(w http.ResponseWriter, r *http.Request) {
+		user, ok := currentUser(w, r)
+		if !ok {
+			return
+		}
+		invitations, err := service.ReceivedInvitations(r.Context(), user)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, invitations)
+	})
+	r.Post("/invitations/{invitationID}/accept", func(w http.ResponseWriter, r *http.Request) {
+		user, ok := currentUser(w, r)
+		if !ok {
+			return
+		}
+		id, err := httpx.ID(r, "invitationID")
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		member, err := service.AcceptInvitationByID(r.Context(), user, id)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, member)
+	})
+	r.Post("/invitations/{invitationID}/decline", func(w http.ResponseWriter, r *http.Request) {
+		user, ok := currentUser(w, r)
+		if !ok {
+			return
+		}
+		id, err := httpx.ID(r, "invitationID")
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		if err := service.DeclineInvitation(r.Context(), user, id); err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	r.Get("/trips/{tripID}/members", func(w http.ResponseWriter, r *http.Request) {
 		user, ok := currentUser(w, r)
 		if !ok {

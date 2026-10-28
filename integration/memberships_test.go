@@ -201,7 +201,11 @@ func TestMembershipLifecycle(t *testing.T) {
 			defer wg.Done()
 			payload, _ := json.Marshal(memberships.AcceptInput{Token: raceInvite.Token})
 			w := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/invitations/accept", bytes.NewReader(payload))
+			path := "/api/v1/invitations/accept"
+			if userID == raceOneID {
+				path = fmt.Sprintf("/api/v1/invitations/%d/accept", raceInvite.ID)
+			}
+			req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(payload))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-Test-User-ID", strconv.FormatInt(userID, 10))
 			handler.ServeHTTP(w, req)
@@ -214,7 +218,142 @@ func TestMembershipLifecycle(t *testing.T) {
 	for status := range statuses {
 		counts[status]++
 	}
-	if counts[http.StatusOK] != 1 || counts[http.StatusBadRequest] != 1 {
+	if counts[http.StatusOK] != 1 || counts[http.StatusBadRequest]+counts[http.StatusNotFound] != 1 {
 		t.Fatalf("concurrent acceptance statuses: %v", counts)
 	}
+
+	t.Run("recipient inbox and decisions", func(t *testing.T) {
+		var inboxTrip trips.Trip
+		request(ownerID, http.MethodPost, "/api/v1/trips", tripInput, http.StatusCreated, &inboxTrip)
+		inboxBase := fmt.Sprintf("/api/v1/trips/%d", inboxTrip.ID)
+		invite := func(email string) memberships.Invitation {
+			t.Helper()
+			var result memberships.Invitation
+			request(ownerID, http.MethodPost, inboxBase+"/invitations", memberships.InvitationInput{Email: email, Role: memberships.RoleMember}, http.StatusCreated, &result)
+			return result
+		}
+		actionPath := func(id int64, action string) string {
+			return fmt.Sprintf("/api/v1/invitations/%d/%s", id, action)
+		}
+		inbox := func(userID int64) []memberships.ReceivedInvitation {
+			t.Helper()
+			var result []memberships.ReceivedInvitation
+			w := request(userID, http.MethodGet, "/api/v1/invitations", nil, http.StatusOK, &result)
+			if strings.Contains(w.Body.String(), "token") || strings.Contains(w.Body.String(), "email") {
+				t.Fatal("recipient summary exposed private fields")
+			}
+			return result
+		}
+		// Invite before signup and discover using the normalized verified address.
+		old := invite(" FUTURE@example.com ")
+		pending := invite("future@example.com")
+		futureID := addUser("future", " Future@EXAMPLE.com ", true)
+		missingID := addUser("no-email", "", true)
+		missingUser := users[missingID]
+		missingUser.Email = nil
+		users[missingID] = missingUser
+		for _, id := range []int64{unverifiedID, missingID} {
+			request(id, http.MethodGet, "/api/v1/invitations", nil, http.StatusForbidden, nil)
+			for _, action := range []string{"accept", "decline"} {
+				request(id, http.MethodPost, actionPath(pending.ID, action), nil, http.StatusNotFound, nil)
+			}
+		}
+		request(0, http.MethodGet, "/api/v1/invitations", nil, http.StatusUnauthorized, nil)
+		list := inbox(futureID)
+		if len(list) != 1 || list[0].ID != pending.ID || list[0].TripID != inboxTrip.ID || list[0].TripName != inboxTrip.Name || list[0].Destination != inboxTrip.Destination || list[0].StartDate != inboxTrip.StartDate || list[0].EndDate != inboxTrip.EndDate || list[0].InviterName != "owner" || list[0].Role != memberships.RoleMember {
+			t.Fatalf("incorrect recipient summary: %+v", list)
+		}
+		if len(inbox(ownerID)) != 0 || len(inbox(wrongID)) != 0 {
+			t.Fatal("inbox was not isolated to recipient email")
+		}
+		request(futureID, http.MethodGet, inboxBase, nil, http.StatusNotFound, nil)
+		for _, action := range []string{"accept", "decline"} {
+			request(wrongID, http.MethodPost, actionPath(pending.ID, action), nil, http.StatusNotFound, nil)
+			request(futureID, http.MethodPost, actionPath(old.ID, action), nil, http.StatusNotFound, nil)
+			request(futureID, http.MethodPost, actionPath(9223372036854775807, action), nil, http.StatusNotFound, nil)
+		}
+		request(futureID, http.MethodPost, actionPath(pending.ID, "decline"), nil, http.StatusNoContent, nil)
+		request(futureID, http.MethodPost, actionPath(pending.ID, "decline"), nil, http.StatusNotFound, nil)
+		request(futureID, http.MethodPost, actionPath(pending.ID, "accept"), nil, http.StatusNotFound, nil)
+		request(futureID, http.MethodPost, "/api/v1/invitations/accept", memberships.AcceptInput{Token: pending.Token}, http.StatusBadRequest, nil)
+		request(futureID, http.MethodGet, inboxBase, nil, http.StatusNotFound, nil)
+		if len(inbox(futureID)) != 0 {
+			t.Fatal("declined invitation stayed in inbox")
+		}
+		fresh := invite("future@example.com")
+		var history []memberships.Invitation
+		request(ownerID, http.MethodGet, inboxBase+"/invitations", nil, http.StatusOK, &history)
+		if len(history) != 3 || history[1].DeclinedAt == nil || history[1].RevokedAt != nil {
+			t.Fatalf("decline history lost when reinviting: %+v", history)
+		}
+		request(ownerID, http.MethodDelete, fmt.Sprintf("%s/invitations/%d", inboxBase, pending.ID), nil, http.StatusNotFound, nil)
+		request(futureID, http.MethodPost, actionPath(fresh.ID, "accept"), nil, http.StatusOK, nil)
+		request(futureID, http.MethodPost, actionPath(fresh.ID, "accept"), nil, http.StatusOK, nil)
+		request(futureID, http.MethodPost, actionPath(fresh.ID, "decline"), nil, http.StatusNotFound, nil)
+		if len(inbox(futureID)) != 0 {
+			t.Fatal("accepted invitation stayed in inbox")
+		}
+		request(futureID, http.MethodGet, inboxBase, nil, http.StatusOK, nil)
+		request(ownerID, http.MethodDelete, fmt.Sprintf("%s/members/%d", inboxBase, futureID), nil, http.StatusNoContent, nil)
+		request(futureID, http.MethodPost, actionPath(fresh.ID, "accept"), nil, http.StatusNotFound, nil)
+		request(futureID, http.MethodPost, "/api/v1/invitations/accept", memberships.AcceptInput{Token: fresh.Token}, http.StatusBadRequest, nil)
+		expiring := invite("future@example.com")
+		if _, err := pool.Exec(ctx, "UPDATE trip_invitations SET expires_at=now()-interval '1 second' WHERE id=$1", expiring.ID); err != nil {
+			t.Fatal(err)
+		}
+		for _, action := range []string{"accept", "decline"} {
+			request(futureID, http.MethodPost, actionPath(expiring.ID, action), nil, http.StatusNotFound, nil)
+		}
+		if len(inbox(futureID)) != 0 {
+			t.Fatal("expired invitation stayed in inbox")
+		}
+		revoking := invite("future@example.com")
+		request(ownerID, http.MethodDelete, fmt.Sprintf("%s/invitations/%d", inboxBase, revoking.ID), nil, http.StatusNoContent, nil)
+		if len(inbox(futureID)) != 0 {
+			t.Fatal("revoked invitation stayed in inbox")
+		}
+		for _, action := range []string{"accept", "decline"} {
+			request(futureID, http.MethodPost, actionPath(revoking.ID, action), nil, http.StatusNotFound, nil)
+		}
+		for _, competing := range []string{"accept", "revoke"} {
+			race := invite("future@example.com")
+			results := make(chan int, 2)
+			for _, action := range []string{competing, "decline"} {
+				wg.Add(1)
+				go func(action string) {
+					defer wg.Done()
+					method, path, caller := http.MethodPost, actionPath(race.ID, action), futureID
+					if action == "revoke" {
+						method, path, caller = http.MethodDelete, fmt.Sprintf("%s/invitations/%d", inboxBase, race.ID), ownerID
+					}
+					w := httptest.NewRecorder()
+					req := httptest.NewRequest(method, path, nil).WithContext(ctx)
+					req.Header.Set("X-Test-User-ID", strconv.FormatInt(caller, 10))
+					handler.ServeHTTP(w, req)
+					results <- w.Code
+				}(action)
+			}
+			wg.Wait()
+			close(results)
+			succeeded, failed := 0, 0
+			for status := range results {
+				switch status {
+				case http.StatusOK, http.StatusNoContent:
+					succeeded++
+				case http.StatusNotFound:
+					failed++
+				default:
+					t.Fatalf("unexpected race status: %d", status)
+				}
+			}
+			if succeeded != 1 || failed != 1 {
+				t.Fatalf("%s vs decline: %d succeeded, %d failed", competing, succeeded, failed)
+			}
+			// Remove membership only if acceptance won, before the next race.
+			if _, err := pool.Exec(ctx, "DELETE FROM trip_members WHERE trip_id=$1 AND user_id=$2", inboxTrip.ID, futureID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+
 }

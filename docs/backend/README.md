@@ -21,7 +21,10 @@ values, and bodies over 1 MiB. Resource IDs are positive BIGINT integers.
 | GET | `/api/v1/trips/{tripID}/members` | List all participants, including the owner |
 | POST / GET | `/api/v1/trips/{tripID}/invitations` | Create or list invitations as owner |
 | DELETE | `/api/v1/trips/{tripID}/invitations/{invitationID}` | Revoke an invitation as owner |
-| POST | `/api/v1/invitations/accept` | Accept an invitation using a verified matching email |
+| GET | `/api/v1/invitations` | Pending invitations for the caller's verified email |
+| POST | `/api/v1/invitations/{invitationID}/accept` | Accept by ID, HTTP 200 with participant |
+| POST | `/api/v1/invitations/{invitationID}/decline` | Decline by ID, HTTP 204 |
+| POST | `/api/v1/invitations/accept` | Legacy token acceptance using a verified matching email |
 | PUT / DELETE | `/api/v1/trips/{tripID}/members/{userID}` | Change a role or remove/leave a trip |
 | POST | `/api/v1/trips/{tripID}/transfer-ownership` | Transfer ownership to an existing member |
 | POST | `/api/v1/trips/{tripID}/activities` | Create scheduled activity, HTTP 201 |
@@ -82,12 +85,25 @@ keys. Removing a participant preserves historical activity authorship.
 - Tokens contain 32 cryptographically random bytes encoded URL-safely. Persist
   only SHA-256 hashes; return raw tokens once on creation. Expiry is seven days.
   Hashes are unique; a partial unique index permits only one active invitation
-  per trip/email. Email delivery remains future work.
-- Accept uses `{"token":"..."}` in the POST body, never an API URL query.
-  The authenticated user's verified email must match the invitation.
+  per trip/email, excluding declined records. Email delivery remains future work.
+- The recipient inbox matches the authenticated user's normalized verified email,
+  including invitations created before signup. Missing/unverified email returns
+  403. Only pending, unexpired, unrevoked, undeclined invitations appear, newest
+  first. Each summary contains `id`, `trip_id`, `trip_name`, `destination`,
+  `start_date`, `end_date`, `role`, `inviter_name`, and `expires_at`; no itinerary
+  or recipient email is exposed before joining.
+- Accept/decline by positive invitation ID without a request body. Both require
+  the verified matching email and recheck terminal state and expiry during the
+  write. Unavailable or unrelated IDs return the same generic 404. Accept returns
+  the participant; decline returns 204 and grants no membership. Owner history
+  includes nullable `declined_at`, and a fresh invite can follow a decline.
+- Legacy acceptance still uses `{"token":"..."}` in the POST body, never an API
+  URL query, sharing the same acceptance transaction and verified-email checks.
 - Accepted invites replay only for the same user with an existing membership.
-  Unaccepted invites must be unexpired and unrevoked; invalid tokens return a
-  generic 400 without disclosing which condition failed.
+  Unaccepted invites must be unexpired, unrevoked, and undeclined; invalid tokens
+  return a generic 400 without disclosing which condition failed.
+- Migration 00009 adds decline history. Its rollback converts declined records
+  to revoked before restoring the older active-invitation uniqueness rule.
 - Transfer uses `{"user_id":123}` and requires an existing member. One
   transaction updates the trip owner, removes the new owner's member row, and
   makes the previous owner an editor. Owners must transfer before leaving.

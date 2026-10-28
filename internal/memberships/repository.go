@@ -78,11 +78,11 @@ func (r *Repository) ListMembers(ctx context.Context, tripID int64) ([]Participa
 	return result, rows.Err()
 }
 
-const invitationColumns = "id,trip_id,email,role,invited_by_user_id,expires_at,accepted_at,revoked_at,created_at,updated_at"
+const invitationColumns = "id,trip_id,email,role,invited_by_user_id,expires_at,accepted_at,revoked_at,declined_at,created_at,updated_at"
 
 func scanInvitation(row pgx.Row) (Invitation, error) {
 	var invitation Invitation
-	err := row.Scan(&invitation.ID, &invitation.TripID, &invitation.Email, &invitation.Role, &invitation.InvitedByUserID, &invitation.ExpiresAt, &invitation.AcceptedAt, &invitation.RevokedAt, &invitation.CreatedAt, &invitation.UpdatedAt)
+	err := row.Scan(&invitation.ID, &invitation.TripID, &invitation.Email, &invitation.Role, &invitation.InvitedByUserID, &invitation.ExpiresAt, &invitation.AcceptedAt, &invitation.RevokedAt, &invitation.DeclinedAt, &invitation.CreatedAt, &invitation.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return invitation, apperror.ErrNotFound
 	}
@@ -96,6 +96,10 @@ func scanInvitation(row pgx.Row) (Invitation, error) {
 	if invitation.RevokedAt != nil {
 		value := invitation.RevokedAt.UTC()
 		invitation.RevokedAt = &value
+	}
+	if invitation.DeclinedAt != nil {
+		value := invitation.DeclinedAt.UTC()
+		invitation.DeclinedAt = &value
 	}
 	return invitation, err
 }
@@ -129,7 +133,7 @@ func (r *Repository) CreateInvitation(ctx context.Context, ownerUserID, tripID i
 		return Invitation{}, fmt.Errorf("%w: user is already a participant", apperror.ErrConflict)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE trip_invitations SET revoked_at=now(),updated_at=now()
-		WHERE trip_id=$1 AND email=$2 AND accepted_at IS NULL AND revoked_at IS NULL`, tripID, email); err != nil {
+		WHERE trip_id=$1 AND email=$2 AND accepted_at IS NULL AND revoked_at IS NULL AND declined_at IS NULL`, tripID, email); err != nil {
 		return Invitation{}, err
 	}
 	invitation, err := scanInvitation(tx.QueryRow(ctx, `INSERT INTO trip_invitations
@@ -164,7 +168,47 @@ func (r *Repository) ListInvitations(ctx context.Context, tripID int64) ([]Invit
 
 func (r *Repository) RevokeInvitation(ctx context.Context, tripID, invitationID int64) error {
 	tag, err := r.pool.Exec(ctx, `UPDATE trip_invitations SET revoked_at=now(),updated_at=now()
-		WHERE trip_id=$1 AND id=$2 AND accepted_at IS NULL AND revoked_at IS NULL`, tripID, invitationID)
+		WHERE trip_id=$1 AND id=$2 AND accepted_at IS NULL AND revoked_at IS NULL AND declined_at IS NULL`, tripID, invitationID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return apperror.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repository) ReceivedInvitations(ctx context.Context, user auth.User, now time.Time) ([]ReceivedInvitation, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT i.id,i.trip_id,t.name,t.destination,t.start_date::text,t.end_date::text,
+			i.role,u.display_name,i.expires_at
+		FROM trip_invitations i JOIN trips t ON t.id=i.trip_id
+		JOIN users u ON u.id=i.invited_by_user_id
+		WHERE i.email=$1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL
+			AND i.declined_at IS NULL AND i.expires_at>$2
+		ORDER BY i.id DESC`, strings.ToLower(strings.TrimSpace(*user.Email)), now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]ReceivedInvitation, 0)
+	for rows.Next() {
+		var invitation ReceivedInvitation
+		if err := rows.Scan(&invitation.ID, &invitation.TripID, &invitation.TripName,
+			&invitation.Destination, &invitation.StartDate, &invitation.EndDate,
+			&invitation.Role, &invitation.InviterName, &invitation.ExpiresAt); err != nil {
+			return nil, err
+		}
+		invitation.ExpiresAt = invitation.ExpiresAt.UTC()
+		result = append(result, invitation)
+	}
+	return result, rows.Err()
+}
+
+func (r *Repository) DeclineInvitation(ctx context.Context, user auth.User, id int64, now time.Time) error {
+	tag, err := r.pool.Exec(ctx, `UPDATE trip_invitations SET declined_at=$3,updated_at=$3
+		WHERE id=$1 AND email=$2 AND accepted_at IS NULL AND revoked_at IS NULL
+			AND declined_at IS NULL AND expires_at>$3`, id, strings.ToLower(strings.TrimSpace(*user.Email)), now)
 	if err != nil {
 		return err
 	}
@@ -175,13 +219,25 @@ func (r *Repository) RevokeInvitation(ctx context.Context, tripID, invitationID 
 }
 
 func (r *Repository) AcceptInvitation(ctx context.Context, user auth.User, tokenHash []byte, now time.Time) (Participant, error) {
+	var id int64
+	err := r.pool.QueryRow(ctx, "SELECT id FROM trip_invitations WHERE token_hash=$1", tokenHash).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Participant{}, invalidInvitation()
+	}
+	if err != nil {
+		return Participant{}, err
+	}
+	return r.AcceptInvitationByID(ctx, user, id, now)
+}
+
+func (r *Repository) AcceptInvitationByID(ctx context.Context, user auth.User, id int64, now time.Time) (Participant, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return Participant{}, err
 	}
 	defer tx.Rollback(ctx)
 	var tripID int64
-	if err := tx.QueryRow(ctx, "SELECT trip_id FROM trip_invitations WHERE token_hash=$1", tokenHash).Scan(&tripID); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRow(ctx, "SELECT trip_id FROM trip_invitations WHERE id=$1", id).Scan(&tripID); errors.Is(err, pgx.ErrNoRows) {
 		return Participant{}, invalidInvitation()
 	} else if err != nil {
 		return Participant{}, err
@@ -193,10 +249,13 @@ func (r *Repository) AcceptInvitation(ctx context.Context, user auth.User, token
 	var email string
 	var role Role
 	var expiresAt time.Time
-	var acceptedAt, revokedAt *time.Time
+	var acceptedAt, revokedAt, declinedAt *time.Time
 	var acceptedBy *int64
-	if err := tx.QueryRow(ctx, `SELECT email,role,expires_at,accepted_at,revoked_at,accepted_by_user_id
-		FROM trip_invitations WHERE token_hash=$1 FOR UPDATE`, tokenHash).Scan(&email, &role, &expiresAt, &acceptedAt, &revokedAt, &acceptedBy); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT email,role,expires_at,accepted_at,revoked_at,declined_at,accepted_by_user_id
+		FROM trip_invitations WHERE id=$1 FOR UPDATE`, id).Scan(&email, &role, &expiresAt, &acceptedAt, &revokedAt, &declinedAt, &acceptedBy); err != nil {
+		return Participant{}, invalidInvitation()
+	}
+	if strings.ToLower(strings.TrimSpace(*user.Email)) != email {
 		return Participant{}, invalidInvitation()
 	}
 	if acceptedAt != nil {
@@ -209,15 +268,14 @@ func (r *Repository) AcceptInvitation(ctx context.Context, user auth.User, token
 		}
 		return member, tx.Commit(ctx)
 	}
-	userEmail := strings.ToLower(strings.TrimSpace(*user.Email))
-	if revokedAt != nil || !expiresAt.After(now) || userEmail != email || ownerUserID == user.ID {
+	if declinedAt != nil || revokedAt != nil || !expiresAt.After(now) || ownerUserID == user.ID {
 		return Participant{}, invalidInvitation()
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO trip_members (trip_id,user_id,role) VALUES ($1,$2,$3)
 		ON CONFLICT (trip_id,user_id) DO UPDATE SET role=EXCLUDED.role,updated_at=now()`, tripID, user.ID, role); err != nil {
 		return Participant{}, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE trip_invitations SET accepted_at=$2,accepted_by_user_id=$3,updated_at=$2 WHERE token_hash=$1`, tokenHash, now, user.ID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE trip_invitations SET accepted_at=$2,accepted_by_user_id=$3,updated_at=$2 WHERE id=$1`, id, now, user.ID); err != nil {
 		return Participant{}, err
 	}
 	member, err := participant(ctx, tx, tripID, user.ID)

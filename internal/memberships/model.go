@@ -27,9 +27,22 @@ type Invitation struct {
 	ExpiresAt       time.Time  `json:"expires_at"`
 	AcceptedAt      *time.Time `json:"accepted_at"`
 	RevokedAt       *time.Time `json:"revoked_at"`
+	DeclinedAt      *time.Time `json:"declined_at"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 	Token           string     `json:"token,omitempty"`
+}
+
+type ReceivedInvitation struct {
+	ID          int64     `json:"id"`
+	TripID      int64     `json:"trip_id"`
+	TripName    string    `json:"trip_name"`
+	Destination string    `json:"destination"`
+	StartDate   string    `json:"start_date"`
+	EndDate     string    `json:"end_date"`
+	Role        Role      `json:"role"`
+	InviterName string    `json:"inviter_name"`
+	ExpiresAt   time.Time `json:"expires_at"`
 }
 
 type InvitationInput struct {

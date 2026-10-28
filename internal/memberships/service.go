@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/mail"
 	"strings"
@@ -21,6 +22,9 @@ type Store interface {
 	ListInvitations(context.Context, int64) ([]Invitation, error)
 	RevokeInvitation(context.Context, int64, int64) error
 	AcceptInvitation(context.Context, auth.User, []byte, time.Time) (Participant, error)
+	ReceivedInvitations(context.Context, auth.User, time.Time) ([]ReceivedInvitation, error)
+	AcceptInvitationByID(context.Context, auth.User, int64, time.Time) (Participant, error)
+	DeclineInvitation(context.Context, auth.User, int64, time.Time) error
 	UpdateRole(context.Context, int64, int64, Role) (Participant, error)
 	RemoveMember(context.Context, int64, int64) error
 	TransferOwnership(context.Context, int64, int64, int64) error
@@ -117,11 +121,40 @@ func (s *Service) RevokeInvitation(ctx context.Context, userID, tripID, invitati
 
 func (s *Service) AcceptInvitation(ctx context.Context, user auth.User, token string) (Participant, error) {
 	token = strings.TrimSpace(token)
-	if token == "" || user.Email == nil || !user.EmailVerified {
+	if token == "" || !verifiedEmail(user) {
 		return Participant{}, fmt.Errorf("%w: invalid invitation", apperror.ErrInvalid)
 	}
 	hash := sha256.Sum256([]byte(token))
 	return s.store.AcceptInvitation(ctx, user, hash[:], time.Now().UTC())
+}
+
+func verifiedEmail(user auth.User) bool {
+	return user.Email != nil && user.EmailVerified && strings.TrimSpace(*user.Email) != ""
+}
+
+func (s *Service) ReceivedInvitations(ctx context.Context, user auth.User) ([]ReceivedInvitation, error) {
+	if !verifiedEmail(user) {
+		return nil, apperror.ErrForbidden
+	}
+	return s.store.ReceivedInvitations(ctx, user, time.Now().UTC())
+}
+
+func (s *Service) AcceptInvitationByID(ctx context.Context, user auth.User, id int64) (Participant, error) {
+	if !verifiedEmail(user) || id <= 0 {
+		return Participant{}, apperror.ErrNotFound
+	}
+	member, err := s.store.AcceptInvitationByID(ctx, user, id, time.Now().UTC())
+	if errors.Is(err, apperror.ErrInvalid) {
+		return Participant{}, apperror.ErrNotFound
+	}
+	return member, err
+}
+
+func (s *Service) DeclineInvitation(ctx context.Context, user auth.User, id int64) error {
+	if !verifiedEmail(user) || id <= 0 {
+		return apperror.ErrNotFound
+	}
+	return s.store.DeclineInvitation(ctx, user, id, time.Now().UTC())
 }
 
 func (s *Service) UpdateRole(ctx context.Context, ownerUserID, tripID, userID int64, role Role) (Participant, error) {
