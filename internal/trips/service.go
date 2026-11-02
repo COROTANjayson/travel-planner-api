@@ -16,7 +16,7 @@ type Store interface {
 	List(context.Context, int64, int, int) ([]Trip, error)
 	Get(context.Context, int64) (Trip, error)
 	Update(context.Context, int64, Input) (Trip, error)
-	Delete(context.Context, int64) error
+	Delete(context.Context, int64, int64) error
 }
 
 type Authorizer interface {
@@ -103,5 +103,5 @@ func (s *Service) Delete(ctx context.Context, ownerUserID, id int64) error {
 	if err := s.authz.RequireOwner(ctx, ownerUserID, id); err != nil {
 		return err
 	}
-	return s.store.Delete(ctx, id)
+	return s.store.Delete(ctx, ownerUserID, id)
 }

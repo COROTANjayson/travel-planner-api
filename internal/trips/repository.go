@@ -111,13 +111,23 @@ func (r *Repository) Update(ctx context.Context, id int64, in Input) (Trip, erro
 	}
 	return t, nil
 }
-func (r *Repository) Delete(ctx context.Context, id int64) error {
-	tag, err := r.pool.Exec(ctx, "DELETE FROM trips WHERE id=$1", id)
+func (r *Repository) Delete(ctx context.Context, ownerUserID, id int64) error {
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	defer tx.Rollback(ctx)
+	var owner int64
+	if err := tx.QueryRow(ctx, "SELECT owner_user_id FROM trips WHERE id=$1 FOR UPDATE", id).Scan(&owner); errors.Is(err, pgx.ErrNoRows) {
 		return apperror.ErrNotFound
+	} else if err != nil {
+		return err
 	}
-	return nil
+	if owner != ownerUserID {
+		return apperror.ErrForbidden
+	}
+	if _, err := tx.Exec(ctx, "DELETE FROM trips WHERE id=$1", id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

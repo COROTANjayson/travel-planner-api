@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"travel-planner/travel-planner-api/internal/auth"
+	"travel-planner/travel-planner-api/internal/expenses"
 	"travel-planner/travel-planner-api/internal/httpx"
 	"travel-planner/travel-planner-api/internal/itinerary"
 	"travel-planner/travel-planner-api/internal/memberships"
@@ -16,10 +17,10 @@ import (
 	"travel-planner/travel-planner-api/internal/trips"
 )
 
-func New(port string, tripService *trips.Service, itineraryService *itinerary.Service, membershipService *memberships.Service, authenticate func(http.Handler) http.Handler, placeService ...*places.Service) *http.Server {
+func New(port string, tripService *trips.Service, itineraryService *itinerary.Service, membershipService *memberships.Service, expenseService *expenses.Service, authenticate func(http.Handler) http.Handler, placeService ...*places.Service) *http.Server {
 	return &http.Server{
 		Addr:              net.JoinHostPort("127.0.0.1", port),
-		Handler:           Router(tripService, itineraryService, membershipService, authenticate, placeService...),
+		Handler:           Router(tripService, itineraryService, membershipService, expenseService, authenticate, placeService...),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -27,7 +28,7 @@ func New(port string, tripService *trips.Service, itineraryService *itinerary.Se
 	}
 }
 
-func Router(tripService *trips.Service, itineraryService *itinerary.Service, membershipService *memberships.Service, authenticate func(http.Handler) http.Handler, placeService ...*places.Service) http.Handler {
+func Router(tripService *trips.Service, itineraryService *itinerary.Service, membershipService *memberships.Service, expenseService *expenses.Service, authenticate func(http.Handler) http.Handler, placeService ...*places.Service) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, requestLog, recoverJSON, middleware.Timeout(25*time.Second))
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +40,9 @@ func Router(tripService *trips.Service, itineraryService *itinerary.Service, mem
 		trips.Register(r, tripService)
 		itinerary.Register(r, itineraryService)
 		memberships.Register(r, membershipService)
+		if expenseService != nil {
+			expenses.Register(r, expenseService)
+		}
 		if len(placeService) > 0 && placeService[0] != nil {
 			places.Register(r, placeService[0])
 		}

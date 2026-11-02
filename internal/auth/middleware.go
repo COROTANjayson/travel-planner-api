@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	jwtmiddleware "github.com/auth0/go-jwt-middleware/v3"
@@ -14,6 +16,7 @@ type claims struct {
 	Email         string `json:"email"`
 	EmailVerified bool   `json:"email_verified"`
 	Name          string `json:"name"`
+	Scope         string `json:"scope"`
 }
 
 func (*claims) Validate(context.Context) error { return nil }
@@ -42,6 +45,18 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 			return
 		}
 		profile, _ := validated.CustomClaims.(*claims)
+		if profile != nil && strings.TrimSpace(profile.Email) == "" && slices.Contains(strings.Fields(profile.Scope), "openid") {
+			profile, err = a.userInfo(r.Context(), validated.RegisteredClaims.Issuer, validated.RegisteredClaims.Subject, r.Header.Get("Authorization"))
+			if err != nil {
+				if errors.Is(err, errProfileUnauthorized) {
+					w.Header().Set("WWW-Authenticate", "Bearer")
+					httpx.JSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				} else {
+					httpx.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Account details are temporarily unavailable. Please try again."})
+				}
+				return
+			}
+		}
 		var email *string
 		displayName := ""
 		if profile != nil {

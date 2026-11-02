@@ -32,6 +32,9 @@ type Service struct {
 func NewService(store Store, authz Authorizer) *Service { return &Service{store: store, authz: authz} }
 
 func validate(in Input) (Input, error) {
+	if len(in.ExpenseChanges) > 100 || (in.RequestKey != "" && (len(in.RequestKey) > 128 || strings.TrimSpace(in.RequestKey) != in.RequestKey)) || (len(in.ExpenseChanges) > 0 && in.RequestKey == "") {
+		return in, fmt.Errorf("%w: activity expense changes require an Idempotency-Key (1 to 128 bytes) and at most 100 costs", apperror.ErrInvalid)
+	}
 	in.Title = strings.TrimSpace(in.Title)
 	in.TimeZone = strings.TrimSpace(in.TimeZone)
 	if in.Title == "" || len(in.Title) > 200 || len(in.Notes) > 10000 {
@@ -125,6 +128,7 @@ func (s *Service) Create(ctx context.Context, userID, tripID int64, in Input) (A
 		items := []ChecklistItem{}
 		in.Checklist = &items
 	}
+	in.ActorID = userID
 	return s.store.Create(ctx, userID, tripID, in)
 }
 func (s *Service) List(ctx context.Context, userID, tripID int64, limit, offset int, from, before *time.Time) ([]Activity, error) {
@@ -150,6 +154,7 @@ func (s *Service) Update(ctx context.Context, userID, tripID, id int64, in Input
 	if err != nil {
 		return Activity{}, err
 	}
+	in.ActorID = userID
 	return s.store.Update(ctx, tripID, id, in)
 }
 func (s *Service) Delete(ctx context.Context, userID, tripID, id int64) error {

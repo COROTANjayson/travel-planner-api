@@ -3,6 +3,8 @@ package auth
 import (
 	"net/http"
 	"net/url"
+	"sync"
+	"time"
 
 	jwtmiddleware "github.com/auth0/go-jwt-middleware/v3"
 	"github.com/auth0/go-jwt-middleware/v3/jwks"
@@ -11,8 +13,11 @@ import (
 )
 
 type Auth struct {
-	jwt   *jwtmiddleware.JWTMiddleware
-	store Store
+	jwt           *jwtmiddleware.JWTMiddleware
+	store         Store
+	profileClient *http.Client
+	profileMu     sync.Mutex
+	profiles      map[[32]byte]cachedProfile
 }
 
 func New(issuer string, audience string, store Store) (*Auth, error) {
@@ -48,5 +53,9 @@ func newAuth(jwtValidator *validator.Validator, store Store) (*Auth, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Auth{jwt: middleware, store: store}, nil
+	return &Auth{
+		jwt: middleware, store: store,
+		profileClient: &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		profiles:      make(map[[32]byte]cachedProfile),
+	}, nil
 }

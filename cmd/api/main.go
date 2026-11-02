@@ -14,6 +14,7 @@ import (
 	"travel-planner/travel-planner-api/internal/auth"
 	"travel-planner/travel-planner-api/internal/config"
 	"travel-planner/travel-planner-api/internal/database"
+	"travel-planner/travel-planner-api/internal/expenses"
 	"travel-planner/travel-planner-api/internal/itinerary"
 	"travel-planner/travel-planner-api/internal/memberships"
 	"travel-planner/travel-planner-api/internal/places"
@@ -56,6 +57,7 @@ func run() error {
 		trips.NewService(trips.NewRepository(pool), membershipService),
 		itinerary.NewService(itinerary.NewRepository(pool), membershipService),
 		membershipService,
+		expenses.NewService(expenses.NewRepository(pool), membershipService),
 		authenticator.Middleware,
 		placeService,
 	)

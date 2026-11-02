@@ -65,6 +65,7 @@ func Register(r chi.Router, s *Service) {
 				httpx.Error(w, err)
 				return
 			}
+			in.RequestKey = r.Header.Get("Idempotency-Key")
 			a, err := s.Create(r.Context(), userID, tripID, in)
 			if err != nil {
 				httpx.Error(w, err)
@@ -160,6 +161,7 @@ func Register(r chi.Router, s *Service) {
 				httpx.Error(w, err)
 				return
 			}
+			in.RequestKey = r.Header.Get("Idempotency-Key")
 			a, err := s.Update(r.Context(), userID, tripID, id, in)
 			if err != nil {
 				httpx.Error(w, err)

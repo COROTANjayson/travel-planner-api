@@ -62,6 +62,10 @@ without printing its contents.
 The API binds to `127.0.0.1`. `/health` is public liveness; `/api/v1` requires
 bearer access tokens. Auth0 handles signup/login; the API provisions local users.
 No Auth0 client secret is required by this API.
+For `openid` access tokens that omit email claims, the API retrieves profile data
+from the issuer's `/userinfo` endpoint after token validation. Outbound HTTPS to
+the Auth0 issuer is needed for JWKS and profile lookup. Invitation recipients
+must verify their email and sign in again; the API never marks an email verified.
 
 ```bash
 curl --fail --show-error http://127.0.0.1:8080/health
@@ -84,7 +88,7 @@ adding empty files or abstractions just to match a template.
 | --- | --- |
 | `cmd/api` | Configuration, dependency wiring, startup, shutdown |
 | `internal/auth` | Auth0 verification, local user provisioning, identity context |
-| `internal/trips`, `memberships`, `itinerary`, `places` | Feature models, handlers, services, repositories, tests |
+| `internal/trips`, `memberships`, `itinerary`, `places`, `expenses` | Feature models, handlers, services, repositories, tests |
 | `internal/httpx`, `apperror` | Strict JSON/ID/pagination helpers and safe error mapping |
 | `internal/config`, `database`, `server` | Shared runtime infrastructure |
 | `migrations` | Ordered Goose SQL migrations |

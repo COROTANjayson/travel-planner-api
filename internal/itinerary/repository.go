@@ -68,10 +68,18 @@ func (r *Repository) Create(ctx context.Context, userID, tripID int64, in Input)
 	if err := checkWindowLocked(ctx, tx, tripID, in); err != nil {
 		return Activity{}, err
 	}
+	if previous, err := previousPlan(ctx, tx, userID, tripID, 0, in); err != nil {
+		return Activity{}, err
+	} else if previous != nil {
+		return *previous, nil
+	}
 	a, err := scan(tx.QueryRow(ctx, `WITH saved AS (INSERT INTO itinerary_items (created_by_user_id,trip_id,title,starts_at,ends_at,time_zone,notes,place_id,category,checklist)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb) RETURNING *) SELECT `+columns+` FROM saved i LEFT JOIN places p ON p.id=i.place_id`,
 		userID, tripID, in.Title, in.StartsAt, in.EndsAt, in.TimeZone, in.Notes, in.PlaceID, in.Category, checklistJSON))
 	if err != nil {
+		return Activity{}, err
+	}
+	if err := finishPlan(ctx, tx, userID, tripID, 0, in, a); err != nil {
 		return Activity{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -205,10 +213,18 @@ func (r *Repository) Update(ctx context.Context, tripID, id int64, in Input) (Ac
 	if err := checkWindowLocked(ctx, tx, tripID, in); err != nil {
 		return Activity{}, err
 	}
+	if previous, err := previousPlan(ctx, tx, in.ActorID, tripID, id, in); err != nil {
+		return Activity{}, err
+	} else if previous != nil {
+		return *previous, nil
+	}
 	a, err := scan(tx.QueryRow(ctx, `WITH saved AS (UPDATE itinerary_items SET title=$3, starts_at=$4, ends_at=$5, time_zone=$6,
 		notes=$7,place_id=$8,category=COALESCE($9::text,category),checklist=COALESCE($10::jsonb,checklist),updated_at=now() WHERE trip_id=$1 AND id=$2 RETURNING *)
 		SELECT `+columns+` FROM saved i LEFT JOIN places p ON p.id=i.place_id`, tripID, id, in.Title, in.StartsAt, in.EndsAt, in.TimeZone, in.Notes, in.PlaceID, in.Category, checklistJSON))
 	if err != nil {
+		return Activity{}, err
+	}
+	if err := finishPlan(ctx, tx, in.ActorID, tripID, id, in, a); err != nil {
 		return Activity{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

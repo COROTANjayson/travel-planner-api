@@ -2,6 +2,7 @@ package itinerary
 
 import (
 	"time"
+	"travel-planner/travel-planner-api/internal/expenses"
 	"travel-planner/travel-planner-api/internal/places"
 )
 
@@ -11,14 +12,17 @@ type ChecklistItem struct {
 }
 
 type Input struct {
-	Title     string           `json:"title"`
-	StartsAt  time.Time        `json:"starts_at"`
-	EndsAt    time.Time        `json:"ends_at"`
-	TimeZone  string           `json:"time_zone"`
-	Notes     string           `json:"notes"`
-	PlaceID   *int64           `json:"place_id"`
-	Category  *string          `json:"category,omitempty"`
-	Checklist *[]ChecklistItem `json:"checklist,omitempty"`
+	ExpenseChanges []expenses.CostChange `json:"expense_changes,omitempty"`
+	RequestKey     string                `json:"-"`
+	ActorID        int64                 `json:"-"`
+	Title          string                `json:"title"`
+	StartsAt       time.Time             `json:"starts_at"`
+	EndsAt         time.Time             `json:"ends_at"`
+	TimeZone       string                `json:"time_zone"`
+	Notes          string                `json:"notes"`
+	PlaceID        *int64                `json:"place_id"`
+	Category       *string               `json:"category,omitempty"`
+	Checklist      *[]ChecklistItem      `json:"checklist,omitempty"`
 }
 
 type Activity struct {

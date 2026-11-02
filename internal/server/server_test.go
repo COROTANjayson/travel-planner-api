@@ -36,7 +36,7 @@ func testIdentity(next http.Handler) http.Handler {
 }
 
 func TestTripsRequireAuthenticatedUserContext(t *testing.T) {
-	handler := Router(nil, nil, nil, func(next http.Handler) http.Handler { return next })
+	handler := Router(nil, nil, nil, nil, func(next http.Handler) http.Handler { return next })
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/trips", nil))
 	if w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"unauthorized\"}\n" {
@@ -45,7 +45,7 @@ func TestTripsRequireAuthenticatedUserContext(t *testing.T) {
 }
 
 func TestHealthAndRequestValidation(t *testing.T) {
-	handler := Router(nil, nil, nil, testIdentity)
+	handler := Router(nil, nil, nil, nil, testIdentity)
 	for index, tc := range []struct {
 		method, path, body string
 		status             int
@@ -88,7 +88,7 @@ func TestRepositoryErrors(t *testing.T) {
 		{apperror.ErrNotFound, http.StatusNotFound},
 		{errors.New("secret database detail"), http.StatusInternalServerError},
 	} {
-		handler := Router(trips.NewService(failingTrips{err: tc.err}, allowAuthorizer{}), nil, nil, testIdentity)
+		handler := Router(trips.NewService(failingTrips{err: tc.err}, allowAuthorizer{}), nil, nil, nil, testIdentity)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/trips/1", nil))
 		if w.Code != tc.status {
