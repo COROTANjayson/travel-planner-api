@@ -80,6 +80,7 @@ func TestAPILifecycle(t *testing.T) {
 		itinerary.NewService(itinerary.NewRepository(pool), membershipService),
 		membershipService,
 		nil,
+		nil,
 		testAuth,
 	)
 	requestAs := func(userID int64, method, path string, body any, status int, target any) {

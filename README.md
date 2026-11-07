@@ -88,7 +88,7 @@ adding empty files or abstractions just to match a template.
 | --- | --- |
 | `cmd/api` | Configuration, dependency wiring, startup, shutdown |
 | `internal/auth` | Auth0 verification, local user provisioning, identity context |
-| `internal/trips`, `memberships`, `itinerary`, `places`, `expenses` | Feature models, handlers, services, repositories, tests |
+| `internal/trips`, `memberships`, `itinerary`, `places`, `expenses`, `prep` | Feature models, handlers, services, repositories, tests |
 | `internal/httpx`, `apperror` | Strict JSON/ID/pagination helpers and safe error mapping |
 | `internal/config`, `database`, `server` | Shared runtime infrastructure |
 | `migrations` | Ordered Goose SQL migrations |

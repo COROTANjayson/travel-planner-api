@@ -18,6 +18,7 @@ import (
 	"travel-planner/travel-planner-api/internal/itinerary"
 	"travel-planner/travel-planner-api/internal/memberships"
 	"travel-planner/travel-planner-api/internal/places"
+	"travel-planner/travel-planner-api/internal/prep"
 	"travel-planner/travel-planner-api/internal/server"
 	"travel-planner/travel-planner-api/internal/trips"
 )
@@ -58,6 +59,7 @@ func run() error {
 		itinerary.NewService(itinerary.NewRepository(pool), membershipService),
 		membershipService,
 		expenses.NewService(expenses.NewRepository(pool), membershipService),
+		prep.NewService(prep.NewRepository(pool), membershipService),
 		authenticator.Middleware,
 		placeService,
 	)

@@ -44,6 +44,11 @@ values, and bodies over 1 MiB. Resource IDs are positive BIGINT integers.
 | POST / GET | `/api/v1/trips/{tripID}/expense_payments` | Record / list business contributions (GET/PUT/DELETE by ID also supported) |
 | POST / GET | `/api/v1/trips/{tripID}/expense_loans` | Record / list cash loans (GET/PUT/DELETE by ID also supported) |
 | GET | `/api/v1/trips/{tripID}/balances` | Spending totals, balances, suggested repayments, and historical identities |
+| POST / GET | `/api/v1/trips/{tripID}/prep-tasks` | Create a Prep task, HTTP 201 / list all of a trip's tasks |
+| PUT / DELETE | `/api/v1/trips/{tripID}/prep-tasks/{taskID}` | Edit / delete a task |
+| PUT | `/api/v1/trips/{tripID}/prep-tasks/{taskID}/assignee` | Assign or unassign a one-person task, HTTP 204 |
+| PUT / DELETE | `/api/v1/trips/{tripID}/prep-tasks/{taskID}/claim` | Claim an open task / drop your own unfinished task, HTTP 204 |
+| PUT / DELETE | `/api/v1/trips/{tripID}/prep-tasks/{taskID}/completion` | Tick or finish / untick or reopen, HTTP 204 |
 
 Successful reads/replacements and place resolution return 200; trip, activity,
 and invitation creation return 201 with `Location`; deletion returns 204 without
@@ -54,7 +59,7 @@ for an accessible trip, 404 missing/hidden resource, 409 conflicting state,
 errors. Do not expose SQL errors, tokens, or provider payloads.
 
 Lists return arrays, including `[]`. Trip, activity, and conflict lists use
-`limit`/`offset`; member and invitation
+`limit`/`offset`; member, invitation, and Prep task
 lists currently return all matching records without pagination. Shared pagination
 defaults to 50 with a 1-100 limit and nonnegative offset. Trips sort by newest
 ID; activities by start instant then ID; conflicts by overlap start then IDs.
@@ -95,6 +100,10 @@ member, or viewer roles. Reuse the memberships authorizer in feature services.
 | Plan shared costs / record business payments | Yes | Yes | No | No |
 | Record own covered purchases, lending, or received repayments | Yes | Yes | Yes | No |
 | Replace/delete financial records | All | All | Own covered costs/lending and received repayments | No |
+| Read Prep tasks | Yes | Yes | Yes | Yes |
+| Add, edit, delete, or assign Prep tasks | Yes | Yes | No | No |
+| Claim, tick, or finish own Prep tasks | Yes | Yes | Yes | No |
+| Reopen a finished one-person Prep task | All | All | Own | No |
 | Invite, revoke, change roles, remove others | Yes | No | No | No |
 | Transfer ownership or delete trip | Yes | No | No | No |
 | Leave trip | Transfer first | Yes | Yes | Yes |
@@ -103,7 +112,7 @@ Trip-scoped endpoints return 404 to nonparticipants, including lists under a
 hidden trip. Establish visibility before returning 403 for insufficient role.
 Owner/creator identities come from request context, not JSON. Trips deleted by
 owners cascade to their activities, memberships, invitations, expenses, shares,
-and settlements through foreign keys. Trip deletion rechecks ownership under a
+settlements, and Prep tasks through foreign keys. Trip deletion rechecks ownership under a
 trip lock. Removing a participant preserves historical authorship and financial
 records, but immediately removes their access.
 
@@ -211,6 +220,49 @@ with optional `exclude_id` for editing. Register static conflict/overlap routes
 before `/{activityID}`. There is no group-specific filtering or automatic
 rescheduling. Concurrent edits remain last-write-wins; ETags and version
 preconditions are proposals, not current requirements.
+
+## Prep tasks
+
+Prep tasks are trip-level and separate from the activity `checklist`. A task's
+`kind` is `one_person` or `everyone` and cannot change. Titles are trimmed and
+must contain 1 to 200 bytes. Viewers can read the list, but do not take part:
+they are not counted, cannot claim or tick, and cannot be assigned.
+
+```json
+{"id":1,"trip_id":2,"created_by_user_id":3,"title":"Renew passport","kind":"everyone",
+ "activity":{"id":8,"title":"Airport transfer","starts_at":"2026-10-01T02:00:00Z"},
+ "date":"2026-10-02","assignee":null,"completed_at":null,"ready_user_ids":[3],"waiting_user_ids":[4,5],
+ "created_at":"2026-10-01T01:00:00Z","updated_at":"2026-10-01T01:00:00Z"}
+```
+
+Create takes `{title, kind, assignee_user_id?, activity_id?, date?}`; edit replaces
+`{title, activity_id, date}`, where a missing or null value clears it; assign takes
+`{user_id}`, where null unassigns. `activity_id` and `date` are independent and
+optional. The activity must be on the same trip, or the request returns 400, and
+deleting it clears the link and keeps the task. `date` is `YYYY-MM-DD` and must be
+one of the trip's days, or the request returns 400. Trip edits don't check it, so a
+saved date can end up outside a trip that moved; it still shows, an edit can keep it
+unchanged, and any new date must fit the trip. An `everyone` task always has a null
+`assignee` and `completed_at`. A `one_person` task's `assignee` is
+`{user_id, display_name, email}` and its ready and waiting lists are empty.
+
+Everyone-task ticks are per person: `/completion` only ever changes the caller's
+own. A one-person task is finished only by its assignee, so an editor who wants
+to finish it assigns it to themselves first. The assignee, an owner, or an editor
+can reopen it. Repeating a tick, finish, reopen, or your own claim succeeds
+without changing anything. A state that has moved on returns 409: a claim on a
+taken task, a drop or finish of someone else's, or an assignment to a finished
+task, which must be reopened first. Claiming or assigning an `everyone` task, or
+assigning someone who is a viewer or not on the trip, returns 400.
+
+Counts and assignees are computed on read from the owner and non-viewer members,
+so leaving, removal, role changes, and ownership transfer write nothing to Prep
+tables. A tick is retained while its author is away and counts again if they
+return. An unfinished task whose assignee left or became a viewer reads as open
+with a null `assignee` and can be claimed; it is theirs again if they return
+first. A finished task keeps its assignee's identity after they leave. Writes are
+single conditional statements, so concurrent claims have one winner and the
+others get 409. Edits are last-write-wins.
 
 ## Expenses and repayments
 
@@ -397,7 +449,8 @@ README for the explicit integration mode and disposable-database requirements.
 Preserve coverage for two-user isolation and role matrices; invitation expiry,
 revocation, verified email, idempotency and transfer; CRUD/cascades; date-only
 and precise windows; DST, midnight and zone changes; creator retention;
-conflict ordering, touching endpoints, pagination and parent-trip isolation.
+conflict ordering, touching endpoints, pagination and parent-trip isolation;
+Prep task roles, read-time counts, leaving and returning, and concurrent claims.
 Use fake HTTP providers for [places](06-places-and-maps.md), not live services.
 
 ## Future proposals and history

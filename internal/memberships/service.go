@@ -63,6 +63,17 @@ func (s *Service) RequireEditor(ctx context.Context, userID, tripID int64) error
 	return nil
 }
 
+func (s *Service) RequireNonViewer(ctx context.Context, userID, tripID int64) error {
+	role, err := s.store.Role(ctx, userID, tripID)
+	if err != nil {
+		return err
+	}
+	if role == RoleViewer {
+		return apperror.ErrForbidden
+	}
+	return nil
+}
+
 func (s *Service) RequireOwner(ctx context.Context, userID, tripID int64) error {
 	role, err := s.store.Role(ctx, userID, tripID)
 	if err != nil {

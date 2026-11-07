@@ -14,13 +14,14 @@ import (
 	"travel-planner/travel-planner-api/internal/itinerary"
 	"travel-planner/travel-planner-api/internal/memberships"
 	"travel-planner/travel-planner-api/internal/places"
+	"travel-planner/travel-planner-api/internal/prep"
 	"travel-planner/travel-planner-api/internal/trips"
 )
 
-func New(port string, tripService *trips.Service, itineraryService *itinerary.Service, membershipService *memberships.Service, expenseService *expenses.Service, authenticate func(http.Handler) http.Handler, placeService ...*places.Service) *http.Server {
+func New(port string, tripService *trips.Service, itineraryService *itinerary.Service, membershipService *memberships.Service, expenseService *expenses.Service, prepService *prep.Service, authenticate func(http.Handler) http.Handler, placeService ...*places.Service) *http.Server {
 	return &http.Server{
 		Addr:              net.JoinHostPort("127.0.0.1", port),
-		Handler:           Router(tripService, itineraryService, membershipService, expenseService, authenticate, placeService...),
+		Handler:           Router(tripService, itineraryService, membershipService, expenseService, prepService, authenticate, placeService...),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -28,7 +29,7 @@ func New(port string, tripService *trips.Service, itineraryService *itinerary.Se
 	}
 }
 
-func Router(tripService *trips.Service, itineraryService *itinerary.Service, membershipService *memberships.Service, expenseService *expenses.Service, authenticate func(http.Handler) http.Handler, placeService ...*places.Service) http.Handler {
+func Router(tripService *trips.Service, itineraryService *itinerary.Service, membershipService *memberships.Service, expenseService *expenses.Service, prepService *prep.Service, authenticate func(http.Handler) http.Handler, placeService ...*places.Service) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, requestLog, recoverJSON, middleware.Timeout(25*time.Second))
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +43,9 @@ func Router(tripService *trips.Service, itineraryService *itinerary.Service, mem
 		memberships.Register(r, membershipService)
 		if expenseService != nil {
 			expenses.Register(r, expenseService)
+		}
+		if prepService != nil {
+			prep.Register(r, prepService)
 		}
 		if len(placeService) > 0 && placeService[0] != nil {
 			places.Register(r, placeService[0])

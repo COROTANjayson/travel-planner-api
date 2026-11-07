@@ -93,7 +93,7 @@ func TestExpenseLedger(t *testing.T) {
 			next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), auth.User{ID: id})))
 		})
 	}
-	handler := server.Router(trips.NewService(trips.NewRepository(pool), authz), itinerary.NewService(itinerary.NewRepository(pool), authz), authz, expenses.NewService(expenses.NewRepository(pool), authz), identity)
+	handler := server.Router(trips.NewService(trips.NewRepository(pool), authz), itinerary.NewService(itinerary.NewRepository(pool), authz), authz, expenses.NewService(expenses.NewRepository(pool), authz), nil, identity)
 	base := fmt.Sprintf("/api/v1/trips/%d", tripID)
 	perform := func(actor int64, method, path string, body any, key string) *httptest.ResponseRecorder {
 		payload, err := json.Marshal(body)

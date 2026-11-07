@@ -53,6 +53,23 @@ func (s *testStore) DeclineInvitation(context.Context, auth.User, int64, time.Ti
 	return nil
 }
 
+func TestRequireNonViewer(t *testing.T) {
+	for _, tc := range []struct {
+		role Role
+		want error
+	}{
+		{RoleOwner, nil},
+		{RoleEditor, nil},
+		{RoleMember, nil},
+		{RoleViewer, apperror.ErrForbidden},
+		{"", apperror.ErrNotFound},
+	} {
+		if err := NewService(&testStore{role: tc.role}).RequireNonViewer(context.Background(), 1, 2); !errors.Is(err, tc.want) {
+			t.Fatalf("role %q: got %v, want %v", tc.role, err, tc.want)
+		}
+	}
+}
+
 func TestInboxRequiresVerifiedEmail(t *testing.T) {
 	email, blank := "traveler@example.com", "  "
 	for _, user := range []auth.User{

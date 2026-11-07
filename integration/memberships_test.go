@@ -94,6 +94,7 @@ func TestMembershipLifecycle(t *testing.T) {
 		itinerary.NewService(itinerary.NewRepository(pool), membershipService),
 		membershipService,
 		nil,
+		nil,
 		testAuth,
 	)
 	request := func(userID int64, method, path string, body any, want int, target any) *httptest.ResponseRecorder {

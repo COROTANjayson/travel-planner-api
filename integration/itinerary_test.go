@@ -117,7 +117,7 @@ func TestItineraryPermissionsScheduleAndCreators(t *testing.T) {
 		t.Fatal(err)
 	}
 	placeService := places.NewService(places.NewRepository(pool), places.NewNominatim(providerServer.URL, &http.Client{Timeout: 5 * time.Second}), finder.GetTimezoneName)
-	handler := server.Router(trips.NewService(trips.NewRepository(pool), authz), itinerary.NewService(itinerary.NewRepository(pool), authz), authz, nil, identity, placeService)
+	handler := server.Router(trips.NewService(trips.NewRepository(pool), authz), itinerary.NewService(itinerary.NewRepository(pool), authz), authz, nil, nil, identity, placeService)
 	request := func(userID int64, method, path string, body any, want int, target any) *httptest.ResponseRecorder {
 		t.Helper()
 		var payload []byte
